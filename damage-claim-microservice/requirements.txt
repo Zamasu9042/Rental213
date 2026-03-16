@@ -1,0 +1,6 @@
+fastapi
+strawberry-graphql[fastapi]
+uvicorn
+google-cloud-vision
+python-multipart
+python-dotenv
