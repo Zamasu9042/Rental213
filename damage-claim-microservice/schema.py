@@ -140,3 +140,11 @@ class Mutation:
         )
 
 schema = strawberry.Schema(query=Query, mutation=Mutation)
+
+
+# Enums and Types: Defines DamageType enum and GraphQL types like FindingType, DamageReportType, and ClaimType for structuring data.
+# Query: Includes a simple "hello" query.
+# Mutations:
+#   analyze_damage: Processes an uploaded image, analyzes it for specified damage types, calculates severity and cost, and returns a new claim.
+#   approve_claim and reject_claim: Update claim status to "APPROVED" or "REJECTED" with provided details.
+# Schema: Combines the query and mutation classes into a Strawberry schema.

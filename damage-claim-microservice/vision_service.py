@@ -59,3 +59,10 @@ def analyze_image(image_bytes: bytes, image_name: str, requested_types: List[str
         summary=f"Found {len(findings)} damage indicator(s).",
         total_issues_found=len(findings),
     )
+
+# DAMAGE_KEYWORDS: A dictionary mapping damage types (e.g., "BREAKAGE", "DENT", "MISSING_PART") to lists of related keywords for matching.
+# analyze_image function:
+# Initializes a Vision client and processes the image bytes.
+# Uses label detection and object localization features to extract labels and scores.
+# Matches detected labels against requested damage types using keywords.
+# Returns a DamageReport with findings, summary, and total issues found.
