@@ -4,3 +4,4 @@ uvicorn
 google-cloud-vision
 python-multipart
 python-dotenv
+pydantic
