@@ -1,6 +1,6 @@
-from flask import Flask
+from flask import Flask, send_from_directory
+import os, stripe
 from .config import Config
-import stripe
 
 def create_app():
     app = Flask(__name__)
@@ -10,5 +10,10 @@ def create_app():
 
     from .routes.payments import payments_bp
     app.register_blueprint(payments_bp, url_prefix="/api/payments")
+
+    # Serve frontend at root
+    @app.route("/")
+    def index():
+        return send_from_directory(os.path.join(app.root_path, 'static'), 'index.html')
 
     return app
