@@ -1,16 +1,19 @@
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
+
 
 class Finding(BaseModel):
     label: str
     confidence: float
     damage_type: str
 
+
 class DamageReport(BaseModel):
-    image_name: str
+    photo_url: str         
     findings: List[Finding]
     summary: str
     total_issues_found: int
+
 
 class ClaimResult(BaseModel):
     claim_id: str
@@ -20,7 +23,17 @@ class ClaimResult(BaseModel):
     estimated_cost: float
     status: str
     damage_report: DamageReport
-    
-# Finding: Represents a detected issue with a label, confidence score, and damage type.
-# DamageReport: Contains an image name, a list of findings, a summary, and total issues found.
-# ClaimResult: Includes claim details like ID, item info, costs, severity, status, and an associated damage report.
+
+
+class ClaimResponse(BaseModel):
+    claim_id: str
+    item_id: int
+    rental_id: Optional[int]
+    photoURL: Optional[str]     
+    damage_type: Optional[str]
+    confidence: Optional[float]
+    severity: str
+    estimated_cost: float
+    status: str
+    summary: Optional[str]
+    total_issues_found: Optional[int]

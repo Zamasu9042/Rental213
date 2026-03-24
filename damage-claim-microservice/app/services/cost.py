@@ -1,4 +1,5 @@
-from models import Finding
+from app.models.claim import Finding
+from typing import List
 
 MINOR_CHARGE = {
     "DENT": 0.20,
@@ -9,7 +10,8 @@ MINOR_CHARGE = {
 MAJOR_THRESHOLD_CONFIDENCE = 0.85
 MAJOR_THRESHOLD_COUNT = 3
 
-def calculate_severity(findings: list[Finding]) -> str:
+
+def calculate_severity(findings: List[Finding]) -> str:
     if not findings:
         return "NONE"
     high_confidence = any(f.confidence >= MAJOR_THRESHOLD_CONFIDENCE for f in findings)
@@ -18,13 +20,13 @@ def calculate_severity(findings: list[Finding]) -> str:
         return "MAJOR"
     return "MINOR"
 
-def calculate_cost(findings: list[Finding], item_cost: float, severity: str) -> float:
+
+def calculate_cost(findings: List[Finding], item_cost: float, severity: str) -> float:
     if severity == "NONE" or not findings:
         return 0.0
     if severity == "MAJOR":
         return round(item_cost, 2)
 
-    # Minor — charge per damage type, take the highest applicable charge
     max_rate = 0.0
     for finding in findings:
         rate = MINOR_CHARGE.get(finding.damage_type, 0.0)
