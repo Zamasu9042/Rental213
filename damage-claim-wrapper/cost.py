@@ -1,21 +1,21 @@
-from app.models.claim import Finding
+from claim import Finding
 from typing import List
 
 MINOR_CHARGE = {
-    "DENT": 0.20,
-    "BREAKAGE": 0.40,
+    "DENT":         0.20,
+    "BREAKAGE":     0.40,
     "MISSING_PART": 0.50,
 }
 
 MAJOR_THRESHOLD_CONFIDENCE = 0.85
-MAJOR_THRESHOLD_COUNT = 3
+MAJOR_THRESHOLD_COUNT      = 3
 
 
 def calculate_severity(findings: List[Finding]) -> str:
     if not findings:
         return "NONE"
     high_confidence = any(f.confidence >= MAJOR_THRESHOLD_CONFIDENCE for f in findings)
-    many_damages = len(findings) >= MAJOR_THRESHOLD_COUNT
+    many_damages    = len(findings) >= MAJOR_THRESHOLD_COUNT
     if high_confidence or many_damages:
         return "MAJOR"
     return "MINOR"

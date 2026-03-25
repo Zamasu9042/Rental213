@@ -1,22 +1,22 @@
 import logging
 from google.cloud import vision
-from app.models.claim import Finding, DamageReport
+from claim import Finding, DamageReport
 from typing import List
 
 logger = logging.getLogger(__name__)
 
+# ── Keyword map ───────────────────────────────────────────────────────────────
+# Maps each damage type to Vision labels that indicate it.
+# Add or remove keywords here to tune detection accuracy.
+
 DAMAGE_KEYWORDS = {
     "BREAKAGE": [
-        # direct damage words
         "crack", "cracked", "cracking", "broken", "shatter", "shattered",
         "fracture", "chip", "chipped", "split", "splinter",
-        # screen / display
         "screen", "display", "touchscreen", "lcd", "glass",
-        # ── phone/device labels Vision returns even for damaged devices ──
         "smartphone", "mobile phone", "phone", "mobile device",
         "gadget", "communication device", "portable communications device",
         "telephony", "tablet", "device",
-        # vehicle
         "wreck", "wrecked", "smash", "smashed", "collision", "crushed",
         "debris", "wreckage", "accident", "windshield",
     ],
@@ -39,11 +39,15 @@ def analyze_image(
     photo_url: str,
     requested_types: List[str],
 ) -> DamageReport:
+    """
+    Sends image bytes to Google Vision, matches returned labels against
+    DAMAGE_KEYWORDS for the requested damage types, and returns a DamageReport.
+    """
     client = vision.ImageAnnotatorClient()
-    image = vision.Image(content=image_bytes)
+    image  = vision.Image(content=image_bytes)
 
     features = [
-        {"type_": vision.Feature.Type.LABEL_DETECTION, "max_results": 30},
+        {"type_": vision.Feature.Type.LABEL_DETECTION,     "max_results": 30},
         {"type_": vision.Feature.Type.OBJECT_LOCALIZATION, "max_results": 20},
     ]
     response = client.annotate_image({"image": image, "features": features})
@@ -60,7 +64,7 @@ def analyze_image(
     logger.info("  requested_types: %s", requested_types)
 
     findings = []
-    seen = set()
+    seen     = set()
 
     for name, score in all_labels:
         description = name.lower()
@@ -72,15 +76,15 @@ def analyze_image(
                 if key not in seen:
                     seen.add(key)
                     findings.append(Finding(
-                        label=name,
-                        confidence=round(score, 3),
-                        damage_type=damage_type,
+                        label       = name,
+                        confidence  = round(score, 3),
+                        damage_type = damage_type,
                     ))
                     logger.info("  MATCH: %s → %s (%.3f)", name, damage_type, score)
 
     return DamageReport(
-        photo_url=photo_url,
-        findings=findings,
-        summary=f"Found {len(findings)} damage indicator(s).",
-        total_issues_found=len(findings),
+        photo_url          = photo_url,
+        findings           = findings,
+        summary            = f"Found {len(findings)} damage indicator(s).",
+        total_issues_found = len(findings),
     )
