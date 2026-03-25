@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS claims (
 
 -- Seed some sample items for testing
 INSERT OR IGNORE INTO items (id, name, category, cost, description) VALUES
-    (1, 'Mountain Bike',   'Sports',      850.00, '21-speed aluminium frame'),
+    (1, 'Mobile Phone',   'Electronics', 200.00, 'Latest model smartphone'),
     (2, 'DSLR Camera',     'Electronics', 1200.00,'Full-frame mirrorless kit'),
     (3, 'Camping Tent',    'Outdoors',    320.00, '4-person waterproof tent'),
     (4, 'Electric Scooter','Transport',   600.00, '25km/h max speed');
