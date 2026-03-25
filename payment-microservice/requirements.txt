@@ -1,7 +1,0 @@
-flask
-stripe
-python-dotenv
-flask-sqlalchemy
-alembic
-pika
-psycopg2-binary
