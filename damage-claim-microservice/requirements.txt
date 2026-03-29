@@ -1,0 +1,12 @@
+# ── Shared by both services ───────────────────────────────────────────────────
+fastapi
+uvicorn
+python-dotenv
+pydantic
+
+# ── Wrapper only ──────────────────────────────────────────────────────────────
+google-cloud-vision
+python-multipart          # needed for UploadFile / Form in FastAPI
+
+# ── Microservice only ─────────────────────────────────────────────────────────
+# (no extra deps — uses stdlib sqlite3)
