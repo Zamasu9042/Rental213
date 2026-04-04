@@ -1,12 +1,22 @@
+/**
+ * PaymentPage.tsx
+ * 
+ * When user confirms rental:
+ * 1. Calls proxy → Camunda starts rental-workflow process
+ * 2. Polls proxy every 2s waiting for stripeRedirectUrl
+ * 3. Redirects user to Stripe to complete payment
+ * 
+ * After Stripe payment, user returns to /confirmation.
+ */
+
 import React, { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import { useApp } from '../context/AppContext';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
-import { Input } from '../components/ui/input';
-import { Label } from '../components/ui/label';
 import { Button } from '../components/ui/button';
-import { CreditCard, Lock, ChevronLeft } from 'lucide-react';
+import { ChevronLeft, Loader2, CreditCard, AlertCircle } from 'lucide-react';
 import { Equipment } from '../context/AppContext';
+import { startRentalProcess, pollStripeUrl } from "../../lib/api";;
 
 interface LocationState {
   equipment: Equipment;
@@ -16,16 +26,17 @@ interface LocationState {
   pickupLocation?: string;
 }
 
+type PageState = 'confirm' | 'starting' | 'waiting-stripe' | 'error';
+
 export const PaymentPage: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
-  const { addRental } = useApp();
+  const { user, addRental } = useApp();
   const state = location.state as LocationState;
 
-  const [cardNumber, setCardNumber] = useState('');
-  const [cardName, setCardName] = useState('');
-  const [expiry, setExpiry] = useState('');
-  const [cvv, setCvv] = useState('');
+  const [pageState, setPageState] = useState<PageState>('confirm');
+  const [errorMessage, setErrorMessage] = useState('');
+  const [processKey, setProcessKey] = useState<string | null>(null);
 
   if (!state) {
     navigate('/marketplace');
@@ -34,32 +45,66 @@ export const PaymentPage: React.FC = () => {
 
   const { equipment, startDate, endDate, totalPrice, pickupLocation } = state;
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    
-    // Create rental
-    const rental = {
-      id: `rental-${Date.now()}`,
-      equipmentId: equipment.id,
-      equipment: equipment,
-      startDate,
-      endDate,
-      totalPrice,
-      status: 'active' as const,
-      pickupLocation,
-    };
+  // Calculate hourly rate from daily rate (equipment.price is per day)
+  // The BPMN expects hourlyRate, so we convert: daily / 24
+  const hourlyRate = +(equipment.price / 24).toFixed(2);
 
-    addRental(rental);
-    navigate('/confirmation', { state: { rental } });
+  const handleConfirm = async () => {
+    if (!user) {
+      navigate('/login');
+      return;
+    }
+
+    setPageState('starting');
+    setErrorMessage('');
+
+    try {
+      // Step 1 — Start the Camunda process
+      const { processInstanceKey } = await startRentalProcess({
+        renterId:       user.id,
+        equipmentId:    equipment.id,
+        startTime:      startDate,
+        endTime:        endDate,
+        hourlyRate,
+        pickUpLocation: pickupLocation || equipment.ownerName,
+      });
+
+      setProcessKey(processInstanceKey);
+
+      // Also add to local state so confirmation page has the rental
+      addRental({
+        id:          `rental-${processInstanceKey}`,
+        equipmentId: equipment.id,
+        equipment,
+        startDate,
+        endDate,
+        totalPrice,
+        status:      'active',
+        pickupLocation,
+      });
+
+      // Step 2 — Poll for Stripe redirect URL
+      setPageState('waiting-stripe');
+      const stripeUrl = await pollStripeUrl(processInstanceKey);
+
+      // Step 3 — Redirect to Stripe
+      window.location.href = stripeUrl;
+
+    } catch (err: any) {
+      console.error("Payment flow error:", err);
+      setErrorMessage(err.message || 'Something went wrong. Please try again.');
+      setPageState('error');
+    }
   };
 
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="max-w-4xl mx-auto px-4 py-8">
-        <Button 
-          variant="ghost" 
+        <Button
+          variant="ghost"
           onClick={() => navigate(-1)}
           className="mb-6 gap-2"
+          disabled={pageState === 'starting' || pageState === 'waiting-stripe'}
         >
           <ChevronLeft className="w-4 h-4" />
           Back
@@ -67,116 +112,127 @@ export const PaymentPage: React.FC = () => {
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
           {/* Order Summary */}
-          <div>
-            <Card>
-              <CardHeader>
-                <CardTitle>Order Summary</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex gap-4">
-                  <img 
-                    src={equipment.images[0]} 
-                    alt={equipment.name}
-                    className="w-20 h-20 object-cover rounded"
-                  />
-                  <div>
-                    <h3 className="font-semibold">{equipment.name}</h3>
-                    <p className="text-sm text-gray-600">{equipment.category}</p>
-                  </div>
+          <Card>
+            <CardHeader>
+              <CardTitle>Order Summary</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex gap-4">
+                <img
+                  src={equipment.images[0]}
+                  alt={equipment.name}
+                  className="w-20 h-20 object-cover rounded"
+                />
+                <div>
+                  <h3 className="font-semibold">{equipment.name}</h3>
+                  <p className="text-sm text-gray-600">{equipment.category}</p>
+                  <p className="text-sm text-gray-500">by {equipment.ownerName}</p>
                 </div>
+              </div>
 
-                <div className="border-t pt-4 space-y-2">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-gray-600">Rental Period</span>
-                    <span>
-                      {new Date(startDate).toLocaleDateString()} - {new Date(endDate).toLocaleDateString()}
-                    </span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-gray-600">Daily Rate</span>
-                    <span>${equipment.price}/day</span>
-                  </div>
-                  <div className="flex justify-between text-lg font-semibold pt-2 border-t">
-                    <span>Total</span>
-                    <span className="text-blue-600">${totalPrice}</span>
-                  </div>
+              <div className="border-t pt-4 space-y-2">
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-600">Rental Period</span>
+                  <span>
+                    {new Date(startDate).toLocaleDateString()} -{' '}
+                    {new Date(endDate).toLocaleDateString()}
+                  </span>
                 </div>
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* Payment Form */}
-          <div>
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <CreditCard className="w-5 h-5" />
-                  Payment Details
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <form onSubmit={handleSubmit} className="space-y-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="cardNumber">Card Number</Label>
-                    <Input
-                      id="cardNumber"
-                      placeholder="1234 5678 9012 3456"
-                      value={cardNumber}
-                      onChange={(e) => setCardNumber(e.target.value)}
-                      maxLength={19}
-                      required
-                    />
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-600">Daily Rate</span>
+                  <span>${equipment.price}/day</span>
+                </div>
+                {pickupLocation && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-600">Pickup</span>
+                    <span className="text-right max-w-[200px]">{pickupLocation}</span>
                   </div>
+                )}
+                <div className="flex justify-between text-lg font-semibold pt-2 border-t">
+                  <span>Total</span>
+                  <span className="text-blue-600">${totalPrice}</span>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
 
-                  <div className="space-y-2">
-                    <Label htmlFor="cardName">Name on Card</Label>
-                    <Input
-                      id="cardName"
-                      placeholder="John Doe"
-                      value={cardName}
-                      onChange={(e) => setCardName(e.target.value)}
-                      required
-                    />
+          {/* Payment Action */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <CreditCard className="w-5 h-5" />
+                Complete Payment
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-6">
+
+              {/* Confirm state */}
+              {pageState === 'confirm' && (
+                <>
+                  <p className="text-gray-600 text-sm">
+                    You'll be redirected to Stripe to complete your payment securely.
+                    Your rental will be confirmed once payment is received.
+                  </p>
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-sm text-blue-800">
+                    <p className="font-semibold mb-1">What happens next:</p>
+                    <ol className="space-y-1 list-decimal list-inside">
+                      <li>Your rental order is created</li>
+                      <li>You're redirected to Stripe to pay</li>
+                      <li>You receive a booking confirmation</li>
+                    </ol>
                   </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="expiry">Expiry Date</Label>
-                      <Input
-                        id="expiry"
-                        placeholder="MM/YY"
-                        value={expiry}
-                        onChange={(e) => setExpiry(e.target.value)}
-                        maxLength={5}
-                        required
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="cvv">CVV</Label>
-                      <Input
-                        id="cvv"
-                        placeholder="123"
-                        type="password"
-                        value={cvv}
-                        onChange={(e) => setCvv(e.target.value)}
-                        maxLength={4}
-                        required
-                      />
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2 text-sm text-gray-600 bg-gray-50 p-3 rounded">
-                    <Lock className="w-4 h-4" />
-                    <span>Your payment information is secure and encrypted</span>
-                  </div>
-
-                  <Button type="submit" className="w-full" size="lg">
-                    Pay ${totalPrice}
+                  <Button className="w-full" size="lg" onClick={handleConfirm}>
+                    Confirm & Pay ${totalPrice}
                   </Button>
-                </form>
-              </CardContent>
-            </Card>
-          </div>
+                </>
+              )}
+
+              {/* Starting Camunda process */}
+              {pageState === 'starting' && (
+                <div className="text-center py-8">
+                  <Loader2 className="w-10 h-10 animate-spin text-blue-600 mx-auto mb-4" />
+                  <p className="font-semibold">Creating your rental order...</p>
+                  <p className="text-sm text-gray-500 mt-2">Setting up your booking</p>
+                </div>
+              )}
+
+              {/* Waiting for Stripe URL */}
+              {pageState === 'waiting-stripe' && (
+                <div className="text-center py-8">
+                  <Loader2 className="w-10 h-10 animate-spin text-blue-600 mx-auto mb-4" />
+                  <p className="font-semibold">Preparing your payment...</p>
+                  <p className="text-sm text-gray-500 mt-2">
+                    Redirecting you to Stripe shortly
+                  </p>
+                  {processKey && (
+                    <p className="text-xs text-gray-400 mt-4 font-mono">
+                      Order ref: {processKey}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* Error state */}
+              {pageState === 'error' && (
+                <div className="space-y-4">
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-4 flex gap-3">
+                    <AlertCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-semibold text-red-800">Something went wrong</p>
+                      <p className="text-sm text-red-700 mt-1">{errorMessage}</p>
+                    </div>
+                  </div>
+                  <Button
+                    className="w-full"
+                    variant="outline"
+                    onClick={() => setPageState('confirm')}
+                  >
+                    Try Again
+                  </Button>
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </div>
       </div>
     </div>
