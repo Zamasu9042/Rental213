@@ -9,15 +9,33 @@
  *   GET  /api/rental/:id         → rental-service
  *   POST /api/rentals            → camunda-proxy (starts workflow)
  *   GET  /api/rentals/:key/stripe-url → camunda-proxy (polls for Stripe URL)
+ *
+ * Base URL: set VITE_API_BASE_URL for a full origin (e.g. deployed Kong). In dev, leave it
+ * unset so requests are same-origin and vite.config.ts proxies /api → Kong (avoids CORS).
  */
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+const envBase = import.meta.env.VITE_API_BASE_URL as string | undefined;
+const API_BASE =
+  typeof envBase === "string" && envBase.trim() !== ""
+    ? envBase.replace(/\/$/, "")
+    : import.meta.env.DEV
+      ? ""
+      : "http://localhost:8000";
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const resp = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
-  });
+  let resp: Response;
+  try {
+    resp = await fetch(`${API_BASE}${path}`, {
+      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+      ...options,
+    });
+  } catch (e) {
+    const msg =
+      e instanceof Error ? e.message : "Network error";
+    throw new Error(
+      `${msg}. Is Docker Compose up with Kong on :8000? (Try: empty VITE_API_BASE_URL in dev + restart Vite.)`
+    );
+  }
 
   if (!resp.ok) {
     const body = await resp.text();
