@@ -2,7 +2,14 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { useApp } from '../context/AppContext';
 import { Equipment } from '../context/AppContext';
-import { getEquipment, getRenterDashboard, getEquipmentById, ApiRental } from '../../lib/api';
+import {
+  getEquipment,
+  getRenterDashboard,
+  getEquipmentById,
+  getRentalsForEquipment,
+  getAccount,
+  ApiRental,
+} from '../../lib/api';
 import { EquipmentCard } from '../components/EquipmentCard';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -11,14 +18,20 @@ import { ArrowRight, Loader2, Calendar, MapPin, Clock, CreditCard } from 'lucide
 
 const STATUS_BADGE: Record<string, { variant: 'default' | 'secondary' | 'destructive' | 'outline'; label: string }> = {
   ACTIVE:    { variant: 'default',     label: 'Active' },
+  COLLECTED: { variant: 'default',     label: 'Collected' },
   PENDING:   { variant: 'outline',     label: 'Pending Payment' },
   RETURNED:  { variant: 'secondary',   label: 'Returned' },
   COMPLETED: { variant: 'secondary',   label: 'Completed' },
   LATE:      { variant: 'destructive', label: 'Late Return' },
 };
 
-interface RentalDisplay extends ApiRental {
-  equipmentName?: string;
+type HomeRentTab = 'renting' | 'rented-out';
+
+interface HomeRentalRow extends ApiRental {
+  equipmentName: string;
+  contactLabel: 'Owner' | 'Renter';
+  contactName?: string;
+  contactPhone?: string;
 }
 
 export const HomePage: React.FC = () => {
@@ -29,13 +42,11 @@ export const HomePage: React.FC = () => {
   const [categories, setCategories] = useState<string[]>([]);
   const [featuredLoading, setFeaturedLoading] = useState(true);
 
-  const [rentals, setRentals] = useState<RentalDisplay[]>([]);
+  const [homeRentTab, setHomeRentTab] = useState<HomeRentTab>('renting');
+  const [rentingList, setRentingList] = useState<HomeRentalRow[]>([]);
+  const [rentedOutList, setRentedOutList] = useState<HomeRentalRow[]>([]);
   const [rentalsLoading, setRentalsLoading] = useState(false);
 
-  // Equipment id → name map for rental cards
-  const [equipmentNames, setEquipmentNames] = useState<Record<number, string>>({});
-
-  // Load featured equipment
   useEffect(() => {
     getEquipment()
       .then(items => {
@@ -47,34 +58,82 @@ export const HomePage: React.FC = () => {
       .finally(() => setFeaturedLoading(false));
   }, []);
 
-  // Load rentals when user is logged in
   useEffect(() => {
     if (!user) return;
     setRentalsLoading(true);
-    getRenterDashboard(Number(user.id))
-      .then(async dashboard => {
-        setRentals(dashboard.rentals);
-        // Fetch equipment names for each unique equipment_id
-        const uniqueIds = [...new Set(dashboard.rentals.map(r => r.equipment_id))];
-        const names: Record<number, string> = {};
-        await Promise.all(uniqueIds.map(async id => {
-          try {
-            const eq = await getEquipmentById(id);
-            names[id] = eq.name;
-          } catch {
-            names[id] = `Equipment #${id}`;
-          }
-        }));
-        setEquipmentNames(names);
-      })
-      .catch(() => {})
-      .finally(() => setRentalsLoading(false));
+    (async () => {
+      try {
+        const dash = await getRenterDashboard(Number(user.id));
+        const rentingEnriched: HomeRentalRow[] = await Promise.all(
+          dash.rentals.map(async r => {
+            let equipmentName = `Equipment #${r.equipment_id}`;
+            let ownerId: number | null = null;
+            try {
+              const eq = await getEquipmentById(r.equipment_id);
+              equipmentName = eq.name;
+              ownerId = parseInt(eq.ownerId, 10);
+            } catch { /* ignore */ }
+            let contactName: string | undefined;
+            let contactPhone: string | undefined;
+            if (ownerId != null && !Number.isNaN(ownerId)) {
+              try {
+                const a = await getAccount(ownerId);
+                contactName = a.accountName;
+                contactPhone = a.phoneNo;
+              } catch { /* ignore */ }
+            }
+            return {
+              ...r,
+              equipmentName,
+              contactLabel: 'Owner' as const,
+              contactName,
+              contactPhone,
+            };
+          })
+        );
+
+        const allEq = await getEquipment();
+        const owned = allEq.filter(e => e.ownerId === user.id);
+        const rentedOut: HomeRentalRow[] = [];
+        await Promise.all(
+          owned.map(async eq => {
+            try {
+              const list = await getRentalsForEquipment(eq.id);
+              for (const r of list) {
+                let contactName: string | undefined;
+                let contactPhone: string | undefined;
+                try {
+                  const a = await getAccount(r.renter_id);
+                  contactName = a.accountName;
+                  contactPhone = a.phoneNo;
+                } catch { /* ignore */ }
+                rentedOut.push({
+                  ...r,
+                  equipmentName: eq.name,
+                  contactLabel: 'Renter',
+                  contactName,
+                  contactPhone,
+                });
+              }
+            } catch { /* ignore */ }
+          })
+        );
+        rentedOut.sort((a, b) => b.id - a.id);
+
+        setRentingList(rentingEnriched);
+        setRentedOutList(rentedOut);
+      } catch {
+        setRentingList([]);
+        setRentedOutList([]);
+      } finally {
+        setRentalsLoading(false);
+      }
+    })();
   }, [user?.id]);
 
-  // When clicking a featured equipment card:
-  // - If rentals are still loading OR a blocking rental exists → go to marketplace (which shows the block page)
-  // - Only go direct to equipment detail when we're certain there's no block
-  const hasBlockingRental = rentals.some(r => r.status === 'PENDING' || r.status === 'LATE');
+  const displayRentals = homeRentTab === 'renting' ? rentingList : rentedOutList;
+
+  const hasBlockingRental = rentingList.some(r => r.status === 'PENDING' || r.status === 'LATE');
 
   const handleEquipmentClick = (equipment: Equipment) => {
     if (!user) { navigate(`/equipment/${equipment.id}`); return; }
@@ -85,12 +144,15 @@ export const HomePage: React.FC = () => {
     }
   };
 
-  const activeRentals = rentals.filter(r => ['ACTIVE', 'PENDING', 'LATE'].includes(r.status));
-  const pastRentals   = rentals.filter(r => ['RETURNED', 'COMPLETED'].includes(r.status));
+  const activeRentals = displayRentals.filter(r =>
+    ['ACTIVE', 'PENDING', 'LATE', 'COLLECTED'].includes(r.status)
+  );
+  const pastRentals = displayRentals.filter(r =>
+    ['RETURNED', 'COMPLETED'].includes(r.status)
+  );
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Hero */}
       <section className="bg-gradient-to-r from-indigo-500 to-purple-600 text-white py-16 px-4">
         <div className="max-w-7xl mx-auto">
           <h1 className="text-4xl md:text-5xl mb-4">
@@ -102,14 +164,37 @@ export const HomePage: React.FC = () => {
         </div>
       </section>
 
-      {/* My Rentals */}
       {user && (
         <section className="max-w-7xl mx-auto px-4 py-10">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-2xl">My Rentals</h2>
-            <Button variant="ghost" className="gap-2" onClick={() => navigate('/my-rentals')}>
-              View All <ArrowRight className="w-4 h-4" />
-            </Button>
+          <div className="flex flex-col gap-4 mb-4">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <h2 className="text-2xl">My Rentals</h2>
+              <div className="flex items-center gap-2 flex-wrap justify-between sm:justify-end">
+                <div className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
+                  <button
+                    type="button"
+                    onClick={() => setHomeRentTab('renting')}
+                    className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
+                      homeRentTab === 'renting' ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-50'
+                    }`}
+                  >
+                    Renting
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHomeRentTab('rented-out')}
+                    className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
+                      homeRentTab === 'rented-out' ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-50'
+                    }`}
+                  >
+                    Rented out
+                  </button>
+                </div>
+                <Button variant="ghost" className="gap-2" onClick={() => navigate('/my-rentals')}>
+                  View All <ArrowRight className="w-4 h-4" />
+                </Button>
+              </div>
+            </div>
           </div>
 
           {rentalsLoading ? (
@@ -118,24 +203,33 @@ export const HomePage: React.FC = () => {
               <span>Loading your rentals...</span>
             </div>
           ) : activeRentals.length === 0 && pastRentals.length === 0 ? (
-            <p className="text-gray-500 py-4">No rentals yet. Browse the marketplace to get started.</p>
+            <p className="text-gray-500 py-4">
+              {homeRentTab === 'renting'
+                ? 'No rentals yet. Browse the marketplace to get started.'
+                : 'Nothing rented out yet. Add listings from My Listings.'}
+            </p>
           ) : (
             <div className="space-y-3">
-              {/* Active / Pending / Late first */}
               {activeRentals.map(rental => {
                 const badge = STATUS_BADGE[rental.status] ?? STATUS_BADGE.ACTIVE;
                 const isPending = rental.status === 'PENDING';
-                const isLate    = rental.status === 'LATE';
+                const isLate = rental.status === 'LATE';
                 return (
                   <Card key={rental.id} className={`border-l-4 ${isPending ? 'border-l-yellow-400' : isLate ? 'border-l-red-500' : 'border-l-blue-500'}`}>
                     <CardContent className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-1">
                           <span className="font-semibold truncate">
-                            {equipmentNames[rental.equipment_id] ?? `Equipment #${rental.equipment_id}`}
+                            {rental.equipmentName}
                           </span>
                           <Badge variant={badge.variant}>{badge.label}</Badge>
                         </div>
+                        {(rental.contactName || rental.contactPhone) && (
+                          <p className="text-xs text-gray-600 mb-1">
+                            <span className="font-medium">{rental.contactLabel}:</span>{' '}
+                            {[rental.contactName, rental.contactPhone].filter(Boolean).join(' · ')}
+                          </p>
+                        )}
                         <div className="flex items-center gap-4 text-sm text-gray-500">
                           <span className="flex items-center gap-1">
                             <Calendar className="w-3 h-3" />
@@ -154,7 +248,7 @@ export const HomePage: React.FC = () => {
                         )}
                       </div>
                       <div className="flex gap-2 shrink-0">
-                        {(isPending || isLate) && (
+                        {(isPending || isLate) && homeRentTab === 'renting' && (
                           <Button
                             size="sm"
                             className="gap-1"
@@ -173,7 +267,6 @@ export const HomePage: React.FC = () => {
                 );
               })}
 
-              {/* Past rentals (collapsed) */}
               {pastRentals.length > 0 && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
                   {pastRentals.slice(0, 2).map(rental => {
@@ -183,10 +276,15 @@ export const HomePage: React.FC = () => {
                         <CardContent className="p-4">
                           <div className="flex items-center justify-between">
                             <span className="font-medium text-sm truncate">
-                              {equipmentNames[rental.equipment_id] ?? `Equipment #${rental.equipment_id}`}
+                              {rental.equipmentName}
                             </span>
                             <Badge variant={badge.variant}>{badge.label}</Badge>
                           </div>
+                          {(rental.contactName || rental.contactPhone) && (
+                            <p className="text-xs text-gray-500 mt-1">
+                              {rental.contactLabel}: {[rental.contactName, rental.contactPhone].filter(Boolean).join(' · ')}
+                            </p>
+                          )}
                           <p className="text-xs text-gray-400 mt-1">
                             {new Date(rental.start_time).toLocaleDateString()} – {new Date(rental.end_time).toLocaleDateString()}
                           </p>
@@ -201,7 +299,6 @@ export const HomePage: React.FC = () => {
         </section>
       )}
 
-      {/* Categories */}
       {categories.length > 0 && (
         <section className="max-w-7xl mx-auto px-4 py-10">
           <h2 className="text-2xl mb-6">Browse by Category</h2>
@@ -220,7 +317,6 @@ export const HomePage: React.FC = () => {
         </section>
       )}
 
-      {/* Featured Equipment */}
       <section className="max-w-7xl mx-auto px-4 py-10">
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-2xl">Featured Equipment</h2>
@@ -252,7 +348,6 @@ export const HomePage: React.FC = () => {
         )}
       </section>
 
-      {/* CTA */}
       <section className="max-w-7xl mx-auto px-4 py-10">
         <div className="bg-gradient-to-r from-indigo-500 to-purple-600 rounded-xl p-8 md:p-12 text-white text-center">
           <h2 className="text-3xl mb-4">Have equipment to rent out?</h2>

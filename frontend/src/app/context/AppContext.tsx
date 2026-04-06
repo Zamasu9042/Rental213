@@ -31,6 +31,7 @@ export interface User {
   name: string;
   email: string;
   phone?: string;
+  role: 'renter' | 'owner' | 'staff';
   hasUnpaidFees: boolean;
   unpaidAmount?: number;
 }
@@ -84,9 +85,11 @@ interface AppContextType {
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
-
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<User | null>(() => {
+    const saved = localStorage.getItem('rental213_user');
+    return saved ? JSON.parse(saved) : null;
+  });
   const [rentals, setRentals] = useState<Rental[]>([]);
   const [damageClaims, setDamageClaims] = useState<DamageClaim[]>([]);
   const [reviews, setReviews] = useState<Review[]>([]);
@@ -94,19 +97,23 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const login = async (email: string, password: string): Promise<void> => {
     const account = await loginUser(email, password);
-    setUser({
+    const userData: User = {
       id: account.id,
       name: account.name,
       email: account.email,
       phone: account.phone,
+      role: (account.role as 'renter' | 'owner' | 'staff') ?? 'renter',
       hasUnpaidFees: false,
-    });
+    };
+    setUser(userData);
+    localStorage.setItem('rental213_user', JSON.stringify(userData));
     setRentals([]);
     setMyListings([]);
   };
 
   const logout = () => {
     setUser(null);
+    localStorage.removeItem('rental213_user');
     setRentals([]);
     setMyListings([]);
   };

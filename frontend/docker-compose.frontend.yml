@@ -19,7 +19,7 @@ services:
       VITE_USE_MOCKS: ${VITE_USE_MOCKS:-false}
       VITE_CHECKOUT_MODE: ${VITE_CHECKOUT_MODE:-pending_payment}
     ports:
-      - "3000:3000"
+      - "5173:3000"
     depends_on:
       - camunda-proxy   # wait for the proxy that handles /api/rentals
     networks: [esd-net]

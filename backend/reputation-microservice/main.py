@@ -1,7 +1,7 @@
 from fastapi import Depends, FastAPI, HTTPException
 from sqlalchemy.orm import Session
 
-from crud import add_entry, apply_penalty, user_scores
+from crud import add_entry, apply_penalty, item_scores, user_scores
 from database import create_tables, get_db
 from models import DeductBody, ItemRatingBody, UserRatingBody
 from orm_models import ReputationRow
@@ -54,6 +54,12 @@ def rate_user(user_id: int, body: UserRatingBody, db: Session = Depends(get_db))
 @app.get("/reputation/user/{user_id}")
 def get_scores(user_id: int, db: Session = Depends(get_db)):
     return user_scores(db, user_id)
+
+
+@app.get("/reputation/item/{equipment_id}")
+def get_item_reputation(equipment_id: int, db: Session = Depends(get_db)):
+    """List ITEM-type ratings for an equipment id (browse / detail page)."""
+    return item_scores(db, equipment_id)
 
 
 @app.put("/reputation/deduct")

@@ -12,12 +12,17 @@ class RentalCreate(BaseModel):
     end_time: datetime
     checkout_mode: Literal["immediate", "pending_payment"] = Field(
         default="immediate",
-        description="immediate: ACTIVE + equipment rented (demo). pending_payment: PENDING only, for Camunda/payment-first flow.",
+        description="immediate: ACTIVE + equipment rented. pending_payment: PENDING only (Camunda flow).",
     )
 
 
 class RentalReturnBody(BaseModel):
     return_timestamp: Optional[datetime] = None
+
+
+class ActorBody(BaseModel):
+    """Used for dual-confirm endpoints — caller passes their own account_id."""
+    account_id: int
 
 
 class RentalOut(BaseModel):
@@ -32,6 +37,12 @@ class RentalOut(BaseModel):
     return_timestamp: Optional[datetime]
     hourly_rate: Decimal
     pickup_location: str
+    # Dual-confirm flags
+    renter_collected: bool = False
+    renter_returned: bool = False
+    owner_returned: bool = False
+    renter_reviewed: bool = False
+    owner_reviewed: bool = False
 
 
 class RenterDashboardOut(BaseModel):
