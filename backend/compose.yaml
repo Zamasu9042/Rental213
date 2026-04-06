@@ -15,6 +15,8 @@ volumes:
     name: esd_damage_photos
   equipment_images:
     name: esd_equipment_images
+  payment_mysql_data:
+    name: esd_payment_mysql_data
 
 networks:
   esd-net:
@@ -118,6 +120,30 @@ services:
     healthcheck:
       test:
         ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot_account"]
+      interval: 5s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+    networks:
+      - esd-net
+
+  payment-db:
+    image: mysql:8.0
+    hostname: payment-db
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: payment_db
+      MYSQL_USER: payment
+      MYSQL_PASSWORD: payment_pass
+      MYSQL_ROOT_PASSWORD: root_payment
+    volumes:
+      - payment_mysql_data:/var/lib/mysql
+      - ./payment-service/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    ports:
+      - "3312:3306"
+    healthcheck:
+      test:
+        ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot_payment"]
       interval: 5s
       timeout: 5s
       retries: 18
@@ -304,7 +330,6 @@ services:
     environment:
       DATABASE_URL: mysql+pymysql://damage:damage_pass@damage-db:3306/damage_claims_db
       VISION_SERVICE_URL: http://vision-service:8000
-      DAMAGE_PUBLIC_BASE: http://damage-claim-service:8000
     volumes:
       - damage_photos:/data/photos
     ports:
@@ -388,6 +413,44 @@ services:
     networks:
       - esd-net
 
+  payment-service:
+    build:
+      context: ./payment-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: mysql+pymysql://payment:payment_pass@payment-db:3306/payment_db
+      RENTAL_SERVICE_URL: http://rental-service:8000
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      AMQP_HOST: rabbitmq
+      AMQP_PORT: "5672"
+      AMQP_EXCHANGE: rental_topic
+    ports:
+      - "8009:8000"
+    depends_on:
+      payment-db:
+        condition: service_healthy
+      rental-service:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - esd-net
+
   payment-wrapper:
     build:
       context: ./payment-wrapper
@@ -426,11 +489,14 @@ services:
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
       RENTAL_SERVICE_URL: http://rental-service:8000
+      PAYMENT_SERVICE_URL: http://payment-service:8000
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
     ports:
       - "3001:3001"
     depends_on:
       rental-service:
+        condition: service_healthy
+      payment-service:
         condition: service_healthy
     networks:
       - esd-net
@@ -451,6 +517,7 @@ services:
     depends_on:
       - equipment-service
       - rental-service
+      - payment-service
       - camunda-proxy
       - reputation-service
     networks:

@@ -39,6 +39,7 @@ class RentalOut(BaseModel):
     pickup_location: str
     # Dual-confirm flags
     renter_collected: bool = False
+    owner_collected: bool = False
     renter_returned: bool = False
     owner_returned: bool = False
     renter_reviewed: bool = False

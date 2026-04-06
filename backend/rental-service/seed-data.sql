@@ -1,5 +1,5 @@
 -- Seed rentals for demo scenarios.
--- Renters: 1001 (renter@test.com), 1004 (renter2@test.com)
+-- Renters: 1001 (renter@test.com), 1004 (renter2check@gmail.com)
 -- Owner: 1002 — Equipment 1–3
 --
 -- Equipment: 1=DJI Drone Mini, 2=Bosch Power Drill, 3=Sony Mirrorless Camera (all owned by 1002)

@@ -4,7 +4,7 @@ import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Card, CardContent } from '../components/ui/card';
 import { differenceInDays } from 'date-fns';
-import { ChevronLeft, MapPin, Shield, Loader2, Star } from 'lucide-react';
+import { ChevronLeft, MapPin, Shield, Loader2, Star, AlertTriangle } from 'lucide-react';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import {
@@ -35,6 +35,7 @@ export const EquipmentDetailPage: React.FC = () => {
   const [pendingReview, setPendingReview] = useState<RentalReviewTarget | null>(null);
   const [showReviewDialog, setShowReviewDialog] = useState(false);
   const [reviewTick, setReviewTick] = useState(0);
+  const [hasOutstandingPayments, setHasOutstandingPayments] = useState(false);
 
   const refreshReputation = useCallback(() => {
     if (!id) return;
@@ -60,6 +61,14 @@ export const EquipmentDetailPage: React.FC = () => {
   useEffect(() => {
     refreshReputation();
   }, [refreshReputation, reviewTick]);
+
+  // Check if renter has outstanding payments (blocks new rentals)
+  useEffect(() => {
+    if (!user || user.role !== 'renter') return;
+    getRenterDashboard(Number(user.id))
+      .then(d => setHasOutstandingPayments(!d.should_show_equipment_browse))
+      .catch(() => {});
+  }, [user?.id]);
 
   useEffect(() => {
     if (!id || !user || !equipment) {
@@ -278,7 +287,27 @@ export const EquipmentDetailPage: React.FC = () => {
                 </div>
               </div>
 
-              {equipment.available ? (
+              {/* Outstanding payment block */}
+              {hasOutstandingPayments && equipment.available ? (
+                <div className="mb-2 bg-amber-50 border border-amber-200 rounded-lg p-4">
+                  <div className="flex items-start gap-2 mb-2">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-sm font-semibold text-amber-900">Outstanding payment required</p>
+                      <p className="text-xs text-amber-800 mt-0.5">
+                        You have a pending or late payment. Please settle it before renting new equipment.
+                      </p>
+                    </div>
+                  </div>
+                  <Button
+                    size="sm"
+                    className="w-full bg-amber-600 hover:bg-amber-700 text-white"
+                    onClick={() => navigate('/my-rentals?filter=payment-due')}
+                  >
+                    View Payment Due
+                  </Button>
+                </div>
+              ) : equipment.available ? (
                 <div className="mb-2">
                   <h3 className="font-semibold text-sm mb-3">Rental period</h3>
                   <div className="grid grid-cols-2 gap-3 mb-3">
@@ -335,8 +364,13 @@ export const EquipmentDetailPage: React.FC = () => {
               )}
 
               <div className="mt-4 pt-3 border-t border-gray-100">
-                <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={() => navigate('/my-rentals')}>
-                  Manage rentals (pickup, return, reviews)
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full sm:w-auto"
+                  onClick={() => navigate(hasOutstandingPayments ? '/my-rentals?filter=payment-due' : '/my-rentals')}
+                >
+                  {hasOutstandingPayments ? 'Pay outstanding fees' : 'Manage rentals (pickup, return, reviews)'}
                 </Button>
               </div>
             </div>

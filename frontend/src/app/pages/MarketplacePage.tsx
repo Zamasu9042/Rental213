@@ -125,8 +125,8 @@ export const MarketplacePage: React.FC = () => {
             Rental #{blockingRental.id} — Status: {blockingRental.status}
           </p>
           <div className="flex flex-col gap-3">
-            <Button onClick={() => navigate('/my-rentals')}>
-              View My Rentals
+            <Button onClick={() => navigate('/my-rentals?filter=payment-due')}>
+              View all rentals
             </Button>
             <Button variant="outline" onClick={() => navigate('/')}>
               Back to Home

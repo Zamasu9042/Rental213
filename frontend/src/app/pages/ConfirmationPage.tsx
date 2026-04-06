@@ -6,9 +6,9 @@
  *   • Rented Out  — rentals where I am the owner (equipment owner_id = user.id)
  *
  * Within each tab, filter tabs:
- *   All | Awaiting pickup | Awaiting return | Awaiting review
+ *   All | Pickup | Return | Review | Completed | Payment Due
  *
- * Flow: ACTIVE → (renter collects) → COLLECTED → (both confirm return) → RETURNED → (both review) → COMPLETED
+ * Flow: ACTIVE → (both confirm pickup) → COLLECTED → (both confirm return) → RETURNED → (both review) → COMPLETED
  */
 
 import React, { useEffect, useState, useCallback } from 'react';
@@ -19,14 +19,15 @@ import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import {
   CheckCircle, Calendar, Package, Clock, Loader2,
-  CreditCard, Truck, RotateCcw, Star, AlertCircle, MapPin,
+  CreditCard, Truck, RotateCcw, Star, AlertCircle, MapPin, ShieldAlert,
 } from 'lucide-react';
 import {
   getRental, getRenterDashboard, getEquipmentById, getRentalsForEquipment,
   getEquipment, markCollected, confirmReturn,
-  getAccount,
-  ApiRental,
+  getAccount, getDamageClaimByRental,
+  ApiRental, ApiDamageClaim,
 } from '../../lib/api';
+import { RENTAL_STATUS_BADGE } from '../../lib/rentalStatusBadges';
 import { RentalReviewDialog } from '../components/RentalReviewDialog';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -41,12 +42,14 @@ interface RentalDisplay extends ApiRental {
 }
 
 type TopTab = 'renting' | 'rented-out';
-type FilterTab = 'all' | 'not-collected' | 'not-returned' | 'not-reviewed';
+type FilterTab = 'all' | 'not-collected' | 'not-returned' | 'not-reviewed' | 'completed' | 'payment-due';
 
 const FILTER_EMPTY: Record<Exclude<FilterTab, 'all'>, string> = {
   'not-collected': 'pickup',
-  'not-returned': 'return',
-  'not-reviewed': 'review',
+  'not-returned':  'return',
+  'not-reviewed':  'review',
+  'completed':     'completed',
+  'payment-due':   'outstanding payment',
 };
 
 // ─── Badge config ─────────────────────────────────────────────────────────────
@@ -55,18 +58,20 @@ const STATUS_BADGE: Record<string, { variant: 'default' | 'secondary' | 'destruc
   ACTIVE:    { variant: 'default',     label: 'Awaiting pickup' },
   COLLECTED: { variant: 'default',     label: 'Awaiting return' },
   RETURNED:  { variant: 'outline',     label: 'Awaiting review' },
-  COMPLETED: { variant: 'secondary',   label: 'Completed' },
-  LATE:      { variant: 'destructive', label: 'Late' },
-  PENDING:   { variant: 'outline',     label: 'Pending payment' },
+  COMPLETED: RENTAL_STATUS_BADGE.COMPLETED,
+  LATE:      RENTAL_STATUS_BADGE.LATE,
+  PENDING:   RENTAL_STATUS_BADGE.PENDING,
 };
 
 // ─── Filter helpers ───────────────────────────────────────────────────────────
 
 function matchesFilter(r: ApiRental, filter: FilterTab): boolean {
-  if (filter === 'all') return true;
+  if (filter === 'all')          return true;
   if (filter === 'not-collected') return r.status === 'ACTIVE';
   if (filter === 'not-returned')  return r.status === 'COLLECTED';
   if (filter === 'not-reviewed')  return r.status === 'RETURNED';
+  if (filter === 'completed')     return r.status === 'COMPLETED';
+  if (filter === 'payment-due')   return r.status === 'PENDING' || r.status === 'LATE';
   return true;
 }
 
@@ -89,9 +94,23 @@ export const ConfirmationPage: React.FC = () => {
   const [topTab, setTopTab]       = useState<TopTab>('renting');
   const [filterTab, setFilterTab] = useState<FilterTab>('all');
 
+  // claim lookup for COMPLETED owner rentals: rentalId → claim or null
+  const [claimsByRental, setClaimsByRental] = useState<Record<number, ApiDamageClaim | null>>({});
+
   // Track which rental IDs are currently being actioned (spinner)
   const [actioning, setActioning] = useState<Set<number>>(new Set());
   const [reviewRental, setReviewRental] = useState<RentalDisplay | null>(null);
+
+  // ── Read URL filter param on mount ─────────────────────────────────────────
+
+  useEffect(() => {
+    const fp = searchParams.get('filter');
+    if (fp === 'payment-due') { setFilterTab('payment-due'); setTopTab('renting'); }
+    else if (fp === 'completed') setFilterTab('completed');
+    else if (fp === 'pickup')   setFilterTab('not-collected');
+    else if (fp === 'return')   setFilterTab('not-returned');
+    else if (fp === 'review')   setFilterTab('not-reviewed');
+  }, []); // only on mount
 
   // ── Data loading ────────────────────────────────────────────────────────────
 
@@ -161,6 +180,22 @@ export const ConfirmationPage: React.FC = () => {
 
       setRentingRentals(rentingWithContact);
       setRentedOutRentals(rentedWithContact);
+
+      // ── Load damage claims for COMPLETED owner rentals ──
+      const completedOwnerRentals = rentedWithContact.filter(r => r.status === 'COMPLETED');
+      const claimMap: Record<number, ApiDamageClaim | null> = {};
+      await Promise.all(
+        completedOwnerRentals.map(async r => {
+          try {
+            const claim = await getDamageClaimByRental(r.id);
+            claimMap[r.id] = claim;
+          } catch {
+            claimMap[r.id] = null; // no claim yet
+          }
+        })
+      );
+      setClaimsByRental(claimMap);
+
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load rentals');
     } finally {
@@ -176,7 +211,7 @@ export const ConfirmationPage: React.FC = () => {
     setActioning(prev => new Set(prev).add(rentalId));
     try {
       await fn();
-      await load(); // refresh all rental data
+      await load();
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Action failed');
     } finally {
@@ -196,10 +231,12 @@ export const ConfirmationPage: React.FC = () => {
   const filtered = activeList.filter(r => matchesFilter(r, filterTab));
 
   const filterCounts = {
-    all:           activeList.length,
+    all:             activeList.length,
     'not-collected': activeList.filter(r => r.status === 'ACTIVE').length,
     'not-returned':  activeList.filter(r => r.status === 'COLLECTED').length,
     'not-reviewed':  activeList.filter(r => r.status === 'RETURNED').length,
+    'completed':     activeList.filter(r => r.status === 'COMPLETED').length,
+    'payment-due':   activeList.filter(r => r.status === 'PENDING' || r.status === 'LATE').length,
   };
 
   return (
@@ -244,13 +281,15 @@ export const ConfirmationPage: React.FC = () => {
 
         {/* ── Filter tabs ──────────────────────────────── */}
         <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm mb-6">
-          <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-3">Needs attention</p>
+          <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-3">Filter</p>
           <div className="flex flex-wrap gap-2">
             {([
               { key: 'all',           label: 'All' },
               { key: 'not-collected', label: 'Pickup' },
               { key: 'not-returned',  label: 'Return' },
               { key: 'not-reviewed',  label: 'Review' },
+              { key: 'completed',     label: 'Completed' },
+              { key: 'payment-due',   label: 'Outstanding payment' },
             ] as const).map(f => (
               <button
                 key={f.key}
@@ -258,14 +297,18 @@ export const ConfirmationPage: React.FC = () => {
                 onClick={() => setFilterTab(f.key)}
                 className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                   filterTab === f.key
-                    ? 'bg-blue-600 text-white'
+                    ? f.key === 'payment-due'
+                      ? 'bg-red-600 text-white'
+                      : f.key === 'completed'
+                        ? 'bg-emerald-600 text-white'
+                        : 'bg-blue-600 text-white'
                     : 'bg-gray-50 text-gray-700 border border-gray-200 hover:border-gray-300'
                 }`}
               >
                 {f.label}
                 {filterCounts[f.key] > 0 && f.key !== 'all' && (
                   <span className={`tabular-nums rounded-md px-1.5 py-0.5 text-[10px] ${
-                    filterTab === f.key ? 'bg-blue-500/30 text-white' : 'bg-gray-200/80 text-gray-600'
+                    filterTab === f.key ? 'bg-white/20 text-white' : 'bg-gray-200/80 text-gray-600'
                   }`}>
                     {filterCounts[f.key]}
                   </span>
@@ -304,9 +347,25 @@ export const ConfirmationPage: React.FC = () => {
                 userId={user!.id}
                 isOwnerView={topTab === 'rented-out'}
                 isActioning={actioning.has(rental.id)}
+                existingClaim={topTab === 'rented-out' ? (claimsByRental[rental.id] ?? null) : undefined}
                 onCollect={() => runAction(rental.id, () => markCollected(rental.id, Number(user!.id)))}
                 onConfirmReturn={() => runAction(rental.id, () => confirmReturn(rental.id, Number(user!.id)))}
                 onOpenReview={() => setReviewRental(rental)}
+                onFileClaim={() => navigate(`/damage-claim/${rental.id}`, {
+                  state: {
+                    equipmentName: rental.equipmentName,
+                    renterName: rental.renterName ?? `Renter #${rental.renter_id}`,
+                  }
+                })}
+                onViewClaim={() => {
+                  const claim = claimsByRental[rental.id];
+                  if (claim) navigate(`/damage-claim-result/${claim.claimID}`, {
+                    state: {
+                      equipmentName: rental.equipmentName,
+                      renterName: rental.renterName ?? `Renter #${rental.renter_id}`,
+                    }
+                  });
+                }}
                 onNavigate={navigate}
               />
             ))}
@@ -338,27 +397,39 @@ interface RentalCardProps {
   userId: string;
   isOwnerView: boolean;
   isActioning: boolean;
+  /** undefined = renter view / not applicable. null = no claim yet. object = claim exists. */
+  existingClaim?: ApiDamageClaim | null;
   onCollect: () => void;
   onConfirmReturn: () => void;
   onOpenReview: () => void;
+  onFileClaim: () => void;
+  onViewClaim: () => void;
   onNavigate: ReturnType<typeof useNavigate>;
 }
 
 const RentalCard: React.FC<RentalCardProps> = ({
   rental, userId, isOwnerView, isActioning,
-  onCollect, onConfirmReturn, onOpenReview, onNavigate,
+  existingClaim,
+  onCollect, onConfirmReturn, onOpenReview, onFileClaim, onViewClaim, onNavigate,
 }) => {
   const badge = STATUS_BADGE[rental.status] ?? { variant: 'outline' as const, label: rental.status };
   const isRenter = String(rental.renter_id) === userId;
 
-  // Which confirm flags apply to this user
-  const myReturnDone   = isRenter ? rental.renter_returned : rental.owner_returned;
+  // Pickup dual-confirm
+  const myPickupDone    = isOwnerView ? rental.owner_collected  : rental.renter_collected;
+  const otherPickupDone = isOwnerView ? rental.renter_collected : rental.owner_collected;
+
+  // Return dual-confirm
+  const myReturnDone    = isRenter ? rental.renter_returned : rental.owner_returned;
   const otherReturnDone = isRenter ? rental.owner_returned  : rental.renter_returned;
-  const myReviewDone   = isRenter ? rental.renter_reviewed : rental.owner_reviewed;
+
+  // Review dual-confirm
+  const myReviewDone    = isRenter ? rental.renter_reviewed : rental.owner_reviewed;
   const otherReviewDone = isRenter ? rental.owner_reviewed  : rental.renter_reviewed;
 
   const accent =
     rental.status === 'LATE'      ? 'border-l-red-500' :
+    rental.status === 'PENDING'   ? 'border-l-orange-400' :
     rental.status === 'ACTIVE'    ? 'border-l-sky-500' :
     rental.status === 'COLLECTED' ? 'border-l-amber-400' :
     rental.status === 'RETURNED'  ? 'border-l-violet-500' :
@@ -371,10 +442,17 @@ const RentalCard: React.FC<RentalCardProps> = ({
       ? [rental.renterName, rental.renterPhone].filter(Boolean).join(' · ')
       : '';
 
+  // Damage claim badge label
+  const claimBadgeLabel =
+    existingClaim?.status === 'PENDING_STAFF_REVIEW' ? 'Claim: Pending Review' :
+    existingClaim?.status === 'APPROVED'             ? 'Claim: Approved' :
+    existingClaim?.status === 'REJECTED'             ? 'Claim: Rejected' :
+    existingClaim?.status === 'DRAFT'                ? 'Claim: Draft' : '';
+
   return (
     <Card className={`border border-gray-200 rounded-lg shadow-sm overflow-hidden border-l-[3px] ${accent}`}>
       <CardContent className="p-3 sm:p-4">
-        {/* Row 1: title + status + primary actions (desktop: actions align right) */}
+        {/* Row 1: title + status + primary actions */}
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 flex-wrap">
@@ -394,20 +472,35 @@ const RentalCard: React.FC<RentalCardProps> = ({
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2 sm:justify-end sm:shrink-0">
+
+            {/* ── PENDING: pay button (renter only) ── */}
             {rental.status === 'PENDING' && isRenter && (
               <Button size="sm" className="gap-1 h-8 text-xs" onClick={() => onNavigate(`/equipment/${rental.equipment_id}`)}>
                 <CreditCard className="w-3 h-3" /> Pay
               </Button>
             )}
-            {rental.status === 'ACTIVE' && isRenter && (
+
+            {/* ── ACTIVE: pickup buttons ── */}
+            {rental.status === 'ACTIVE' && !isOwnerView && !myPickupDone && (
               <Button size="sm" className="gap-1 h-8 text-xs" disabled={isActioning} onClick={onCollect}>
                 {isActioning ? <Loader2 className="w-3 h-3 animate-spin" /> : <Truck className="w-3 h-3" />}
-                Collected
+                Confirm Pickup
               </Button>
             )}
-            {rental.status === 'ACTIVE' && isOwnerView && (
-              <span className="text-[11px] text-gray-500">Awaiting pickup</span>
+            {rental.status === 'ACTIVE' && !isOwnerView && myPickupDone && !otherPickupDone && (
+              <span className="text-[11px] text-gray-500">Waiting for owner</span>
             )}
+            {rental.status === 'ACTIVE' && isOwnerView && !myPickupDone && (
+              <Button size="sm" className="gap-1 h-8 text-xs" disabled={isActioning} onClick={onCollect}>
+                {isActioning ? <Loader2 className="w-3 h-3 animate-spin" /> : <Truck className="w-3 h-3" />}
+                Confirm Pickup
+              </Button>
+            )}
+            {rental.status === 'ACTIVE' && isOwnerView && myPickupDone && !otherPickupDone && (
+              <span className="text-[11px] text-gray-500">Waiting for renter</span>
+            )}
+
+            {/* ── COLLECTED: return buttons ── */}
             {rental.status === 'COLLECTED' && !myReturnDone && (
               <Button size="sm" className="gap-1 h-8 text-xs" disabled={isActioning} onClick={onConfirmReturn}>
                 {isActioning ? <Loader2 className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3" />}
@@ -417,6 +510,8 @@ const RentalCard: React.FC<RentalCardProps> = ({
             {rental.status === 'COLLECTED' && myReturnDone && !otherReturnDone && (
               <span className="text-[11px] text-gray-500">Waiting for {isRenter ? 'owner' : 'renter'}</span>
             )}
+
+            {/* ── RETURNED: review buttons ── */}
             {rental.status === 'RETURNED' && !myReviewDone && (
               <Button size="sm" variant="outline" className="gap-1 h-8 text-xs" disabled={isActioning} onClick={onOpenReview}>
                 {isActioning ? <Loader2 className="w-3 h-3 animate-spin" /> : <Star className="w-3 h-3" />}
@@ -426,20 +521,39 @@ const RentalCard: React.FC<RentalCardProps> = ({
             {rental.status === 'RETURNED' && myReviewDone && !otherReviewDone && (
               <span className="text-[11px] text-gray-500">Waiting for {isRenter ? 'owner' : 'renter'}</span>
             )}
-            {rental.status === 'COMPLETED' && (
+
+            {/* ── COMPLETED: done indicator + damage claim (owner only) ── */}
+            {rental.status === 'COMPLETED' && !isOwnerView && (
               <span className="text-[11px] text-emerald-700 inline-flex items-center gap-1">
                 <CheckCircle className="w-3 h-3" /> Done
               </span>
             )}
+            {rental.status === 'COMPLETED' && isOwnerView && existingClaim === undefined && (
+              <span className="text-[11px] text-emerald-700 inline-flex items-center gap-1">
+                <CheckCircle className="w-3 h-3" /> Done
+              </span>
+            )}
+            {rental.status === 'COMPLETED' && isOwnerView && existingClaim === null && (
+              <Button size="sm" variant="outline" className="gap-1 h-8 text-xs border-red-200 text-red-700 hover:bg-red-50" onClick={onFileClaim}>
+                <ShieldAlert className="w-3 h-3" /> File Claim
+              </Button>
+            )}
+            {rental.status === 'COMPLETED' && isOwnerView && existingClaim != null && (
+              <Button size="sm" variant="outline" className="gap-1 h-8 text-xs" onClick={onViewClaim}>
+                <AlertCircle className="w-3 h-3" /> View Claim
+              </Button>
+            )}
+
+            {/* ── LATE ── */}
             {rental.status === 'LATE' && isRenter && (
               <Button size="sm" variant="destructive" className="gap-1 h-8 text-xs" onClick={() => onNavigate(`/equipment/${rental.equipment_id}`)}>
-                <CreditCard className="w-3 h-3" /> Pay late
+                <CreditCard className="w-3 h-3" /> Pay late fee
               </Button>
             )}
           </div>
         </div>
 
-        {/* Row 2: one compact line — contact · dates · place · rate */}
+        {/* Row 2: contact · dates · place · rate */}
         <div className="mt-2 pt-2 border-t border-gray-100 text-[11px] sm:text-xs text-gray-600 flex flex-wrap items-center gap-x-3 gap-y-1">
           {contactLine && (
             <span className="text-gray-500">
@@ -460,22 +574,37 @@ const RentalCard: React.FC<RentalCardProps> = ({
         {rental.status === 'LATE' && (
           <div className="flex items-center gap-1.5 text-red-800 text-[11px] mt-2 bg-red-50 rounded px-2 py-1">
             <Clock className="w-3 h-3 shrink-0" />
-            Late return — fees may apply
+            Late return — fees apply
           </div>
         )}
 
+        {/* ── Dual-confirm rows ── */}
+        {rental.status === 'ACTIVE' && (
+          <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] bg-sky-50/90 rounded-md px-2 py-1.5 border border-sky-100/80">
+            <span className="font-medium text-sky-950 shrink-0">Pickup</span>
+            <ConfirmRow label="Renter" done={rental.renter_collected} />
+            <ConfirmRow label="Owner"  done={rental.owner_collected} />
+          </div>
+        )}
         {rental.status === 'COLLECTED' && (
           <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] bg-amber-50/90 rounded-md px-2 py-1.5 border border-amber-100/80">
             <span className="font-medium text-amber-950 shrink-0">Return</span>
             <ConfirmRow label="Renter" done={rental.renter_returned} />
-            <ConfirmRow label="Owner" done={rental.owner_returned} />
+            <ConfirmRow label="Owner"  done={rental.owner_returned} />
           </div>
         )}
         {rental.status === 'RETURNED' && (
           <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] bg-violet-50/90 rounded-md px-2 py-1.5 border border-violet-100/80">
             <span className="font-medium text-violet-950 shrink-0">Review</span>
             <ConfirmRow label="Renter" done={rental.renter_reviewed} />
-            <ConfirmRow label="Owner" done={rental.owner_reviewed} />
+            <ConfirmRow label="Owner"  done={rental.owner_reviewed} />
+          </div>
+        )}
+
+        {/* ── Claim status badge for completed owner rentals ── */}
+        {rental.status === 'COMPLETED' && isOwnerView && existingClaim != null && claimBadgeLabel && (
+          <div className="mt-2 text-[11px] text-gray-600 bg-gray-50 rounded-md px-2 py-1.5 border border-gray-100">
+            {claimBadgeLabel}
           </div>
         )}
       </CardContent>

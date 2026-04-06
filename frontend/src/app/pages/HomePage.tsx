@@ -15,15 +15,9 @@ import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Card, CardContent } from '../components/ui/card';
 import { ArrowRight, Loader2, Calendar, MapPin, Clock, CreditCard } from 'lucide-react';
+import { RENTAL_STATUS_BADGE } from '../../lib/rentalStatusBadges';
 
-const STATUS_BADGE: Record<string, { variant: 'default' | 'secondary' | 'destructive' | 'outline'; label: string }> = {
-  ACTIVE:    { variant: 'default',     label: 'Active' },
-  COLLECTED: { variant: 'default',     label: 'Collected' },
-  PENDING:   { variant: 'outline',     label: 'Pending Payment' },
-  RETURNED:  { variant: 'secondary',   label: 'Returned' },
-  COMPLETED: { variant: 'secondary',   label: 'Completed' },
-  LATE:      { variant: 'destructive', label: 'Late Return' },
-};
+const STATUS_BADGE = RENTAL_STATUS_BADGE;
 
 type HomeRentTab = 'renting' | 'rented-out';
 
@@ -137,6 +131,7 @@ export const HomePage: React.FC = () => {
 
   const handleEquipmentClick = (equipment: Equipment) => {
     if (!user) { navigate(`/equipment/${equipment.id}`); return; }
+    // Unpaid/late: show Marketplace “payment not paid” screen first, not My Rentals
     if (rentalsLoading || hasBlockingRental) {
       navigate('/marketplace');
     } else {
@@ -190,7 +185,15 @@ export const HomePage: React.FC = () => {
                     Rented out
                   </button>
                 </div>
-                <Button variant="ghost" className="gap-2" onClick={() => navigate('/my-rentals')}>
+                <Button
+                  variant="ghost"
+                  className="gap-2"
+                  onClick={() =>
+                    navigate(
+                      hasBlockingRental ? '/my-rentals?filter=payment-due' : '/my-rentals'
+                    )
+                  }
+                >
                   View All <ArrowRight className="w-4 h-4" />
                 </Button>
               </div>
@@ -252,13 +255,23 @@ export const HomePage: React.FC = () => {
                           <Button
                             size="sm"
                             className="gap-1"
-                            onClick={() => navigate('/my-rentals')}
+                            onClick={() => navigate('/my-rentals?filter=payment-due')}
                           >
                             <CreditCard className="w-3 h-3" />
                             Pay Now
                           </Button>
                         )}
-                        <Button size="sm" variant="outline" onClick={() => navigate('/my-rentals')}>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            navigate(
+                              isPending || isLate
+                                ? '/my-rentals?filter=payment-due'
+                                : '/my-rentals'
+                            )
+                          }
+                        >
                           Details
                         </Button>
                       </div>

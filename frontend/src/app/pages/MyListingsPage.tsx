@@ -1,28 +1,28 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { useApp } from '../context/AppContext';
-import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import { Card, CardContent } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
-import { Package, Loader2, AlertTriangle, Calendar, MapPin, AlertCircle } from 'lucide-react';
-import { getEquipment, getRentalsForEquipment, ApiRental } from '../../lib/api';
+import { Package, Loader2, AlertTriangle, Calendar, MapPin, AlertCircle, CheckCircle, Clock, XCircle } from 'lucide-react';
+import { getEquipment, getRentalsForEquipment, getDamageClaimByRental, ApiRental, ApiDamageClaim } from '../../lib/api';
 import { Equipment } from '../context/AppContext';
+import { RENTAL_STATUS_BADGE } from '../../lib/rentalStatusBadges';
 
 interface RentalRow {
   rental: ApiRental;
   equipment: Equipment;
+  claim?: ApiDamageClaim | null; // undefined = not loaded, null = no claim
 }
 
-const STATUS_BADGE: Record<string, { variant: 'default' | 'secondary' | 'destructive' | 'outline'; label: string }> = {
-  ACTIVE:    { variant: 'default',     label: 'Active' },
-  PENDING:   { variant: 'outline',     label: 'Pending Payment' },
-  RETURNED:  { variant: 'secondary',   label: 'Returned' },
-  COMPLETED: { variant: 'secondary',   label: 'Completed' },
-  LATE:      { variant: 'destructive', label: 'Late Return' },
-};
+const STATUS_BADGE = RENTAL_STATUS_BADGE;
 
-// Statuses that allow a damage claim to be filed
-const CLAIMABLE = new Set(['RETURNED', 'COMPLETED', 'LATE']);
+const CLAIM_BADGE: Record<string, { variant: 'default' | 'secondary' | 'destructive' | 'outline'; label: string; icon: React.ReactNode }> = {
+  DRAFT:                { variant: 'outline',     label: 'Draft',          icon: <Clock className="w-3 h-3" /> },
+  PENDING_STAFF_REVIEW: { variant: 'default',     label: 'Pending Review', icon: <Clock className="w-3 h-3" /> },
+  APPROVED:             { variant: 'secondary',   label: 'Approved',       icon: <CheckCircle className="w-3 h-3" /> },
+  REJECTED:             { variant: 'destructive', label: 'Rejected',       icon: <XCircle className="w-3 h-3" /> },
+};
 
 export const MyListingsPage: React.FC = () => {
   const { user } = useApp();
@@ -54,9 +54,20 @@ export const MyListingsPage: React.FC = () => {
             }
           })
         );
-        // Sort all rentals newest first
         rows.sort((a, b) => b.rental.id - a.rental.id);
-        setAllRentals(rows);
+
+        // Load damage claims for COMPLETED rentals
+        await Promise.all(
+          rows.filter(r => r.rental.status === 'COMPLETED').map(async row => {
+            try {
+              row.claim = await getDamageClaimByRental(row.rental.id);
+            } catch {
+              row.claim = null; // 404 = no claim
+            }
+          })
+        );
+
+        setAllRentals([...rows]);
       })
       .catch(err => setError(err instanceof Error ? err.message : 'Failed to load data'))
       .finally(() => setLoading(false));
@@ -71,9 +82,10 @@ export const MyListingsPage: React.FC = () => {
     );
   }
 
-  const activeRentals  = allRentals.filter(r => r.rental.status === 'ACTIVE');
-  const claimableRentals = allRentals.filter(r => CLAIMABLE.has(r.rental.status));
-  const pendingRentals = allRentals.filter(r => r.rental.status === 'PENDING');
+  const activeRentals    = allRentals.filter(r => r.rental.status === 'ACTIVE' || r.rental.status === 'COLLECTED');
+  const pendingRentals   = allRentals.filter(r => r.rental.status === 'PENDING');
+  const returnedRentals  = allRentals.filter(r => r.rental.status === 'RETURNED');
+  const completedRentals = allRentals.filter(r => r.rental.status === 'COMPLETED');
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -136,58 +148,72 @@ export const MyListingsPage: React.FC = () => {
           )}
         </section>
 
-        {/* Active Rentals */}
+        {/* Active / Collected Rentals */}
         {activeRentals.length > 0 && (
           <section className="mb-10">
             <h2 className="text-lg font-semibold mb-3">Currently Rented Out</h2>
             <div className="space-y-3">
               {activeRentals.map(({ rental, equipment: eq }) => (
-                <RentalCard key={rental.id} rental={rental} equipmentName={eq.name} />
+                <SimpleRentalCard key={rental.id} rental={rental} equipmentName={eq.name} />
               ))}
             </div>
           </section>
         )}
 
-        {/* Pending Payment */}
+        {/* Outstanding payment (renter has not paid yet) */}
         {pendingRentals.length > 0 && (
           <section className="mb-10">
-            <h2 className="text-lg font-semibold mb-3">Pending Payment</h2>
+            <h2 className="text-lg font-semibold mb-3">Outstanding payment</h2>
             <div className="space-y-3">
               {pendingRentals.map(({ rental, equipment: eq }) => (
-                <RentalCard key={rental.id} rental={rental} equipmentName={eq.name} />
+                <SimpleRentalCard key={rental.id} rental={rental} equipmentName={eq.name} />
               ))}
             </div>
           </section>
         )}
 
-        {/* Returned Rentals — Damage Claim Eligible */}
+        {/* Returned — awaiting review */}
+        {returnedRentals.length > 0 && (
+          <section className="mb-10">
+            <h2 className="text-lg font-semibold mb-3">Returned — Awaiting Review</h2>
+            <div className="space-y-3">
+              {returnedRentals.map(({ rental, equipment: eq }) => (
+                <SimpleRentalCard key={rental.id} rental={rental} equipmentName={eq.name} />
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/* Completed Rentals — Damage Claim Eligible */}
         <section>
           <div className="flex items-center gap-2 mb-3">
-            <h2 className="text-lg font-semibold">Returned Rentals</h2>
+            <h2 className="text-lg font-semibold">Completed Rentals</h2>
             <span className="text-xs text-gray-500 bg-gray-100 rounded px-2 py-0.5">
               Damage claims can be filed here
             </span>
           </div>
 
-          {claimableRentals.length === 0 ? (
+          {completedRentals.length === 0 ? (
             <Card>
               <CardContent className="py-8 text-center text-gray-500">
-                No returned rentals yet.
+                No completed rentals yet.
               </CardContent>
             </Card>
           ) : (
             <div className="space-y-3">
-              {claimableRentals.map(({ rental, equipment: eq }) => (
-                <Card key={rental.id} className="border-l-4 border-l-gray-300">
-                  <CardContent className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              {completedRentals.map(({ rental, equipment: eq, claim }) => (
+                <Card key={rental.id} className="border-l-4 border-l-emerald-400">
+                  <CardContent className="p-4 flex flex-col sm:flex-row sm:items-start justify-between gap-3">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1 flex-wrap">
                         <span className="font-semibold">{eq.name}</span>
-                        <Badge variant={STATUS_BADGE[rental.status]?.variant ?? 'outline'}>
-                          {STATUS_BADGE[rental.status]?.label ?? rental.status}
-                        </Badge>
-                        {rental.status === 'LATE' && (
-                          <Badge variant="destructive" className="text-xs">Late Fee Applies</Badge>
+                        <Badge variant="secondary">Completed</Badge>
+                        {/* Damage claim status badge */}
+                        {claim && CLAIM_BADGE[claim.status] && (
+                          <Badge variant={CLAIM_BADGE[claim.status].variant} className="gap-1 text-xs">
+                            {CLAIM_BADGE[claim.status].icon}
+                            Claim: {CLAIM_BADGE[claim.status].label}
+                          </Badge>
                         )}
                       </div>
                       <p className="text-xs text-gray-500 mb-1">
@@ -211,22 +237,46 @@ export const MyListingsPage: React.FC = () => {
                       )}
                     </div>
 
-                    <Button
-                      size="sm"
-                      variant="destructive"
-                      className="shrink-0 gap-1"
-                      onClick={() =>
-                        navigate(`/damage-claim/${rental.id}`, {
-                          state: {
-                            equipmentName: eq.name,
-                            renterName: `Renter #${rental.renter_id}`,
-                          },
-                        })
-                      }
-                    >
-                      <AlertCircle className="w-3 h-3" />
-                      File Damage Claim
-                    </Button>
+                    <div className="flex flex-col gap-2 shrink-0">
+                      {/* No existing claim → file one */}
+                      {claim === null && (
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          className="gap-1"
+                          onClick={() =>
+                            navigate(`/damage-claim/${rental.id}`, {
+                              state: {
+                                equipmentName: eq.name,
+                                renterName: `Renter #${rental.renter_id}`,
+                              },
+                            })
+                          }
+                        >
+                          <AlertCircle className="w-3 h-3" />
+                          File Damage Claim
+                        </Button>
+                      )}
+                      {/* Existing claim → view it */}
+                      {claim && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="gap-1"
+                          onClick={() =>
+                            navigate(`/damage-claim-result/${claim.claimID}`, {
+                              state: {
+                                equipmentName: eq.name,
+                                renterName: `Renter #${rental.renter_id}`,
+                              },
+                            })
+                          }
+                        >
+                          <AlertCircle className="w-3 h-3" />
+                          View Claim
+                        </Button>
+                      )}
+                    </div>
                   </CardContent>
                 </Card>
               ))}
@@ -238,8 +288,8 @@ export const MyListingsPage: React.FC = () => {
   );
 };
 
-// ── Small helper component ─────────────────────────────────────────────────────
-const RentalCard: React.FC<{ rental: ApiRental; equipmentName: string }> = ({ rental, equipmentName }) => {
+// ── Simple rental card (for active/pending/returned sections) ──────────────────
+const SimpleRentalCard: React.FC<{ rental: ApiRental; equipmentName: string }> = ({ rental, equipmentName }) => {
   const badge = STATUS_BADGE[rental.status] ?? { variant: 'outline' as const, label: rental.status };
   return (
     <Card>

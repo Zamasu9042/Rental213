@@ -10,6 +10,7 @@
  *   POST /api/reputation/item, /api/reputation/user/:id → reputation-service
  *   POST /api/rentals            → camunda-proxy (starts workflow)
  *   GET  /api/rentals/:key/stripe-url → camunda-proxy (polls for Stripe URL)
+ *   POST /api/payment/payrental, /api/payment/outstanding → payment-service
  *
  * Base URL: set VITE_API_BASE_URL for a full origin (e.g. deployed Kong). In dev, leave it
  * unset so requests are same-origin and vite.config.ts proxies /api → Kong (avoids CORS).
@@ -40,12 +41,23 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
   if (!resp.ok) {
     const body = await resp.text();
+    let msg = `Request failed: ${resp.status}`;
     try {
-      const parsed = JSON.parse(body);
-      throw new Error(parsed.detail || parsed.error || parsed.message || `Request failed: ${resp.status}`);
+      const parsed = JSON.parse(body) as {
+        detail?: string | Array<{ msg?: string }>;
+        error?: string;
+        message?: string;
+      };
+      const d = parsed.detail;
+      if (typeof d === "string") msg = d;
+      else if (Array.isArray(d) && d[0]?.msg) msg = String(d[0].msg);
+      else if (parsed.error) msg = parsed.error;
+      else if (parsed.message) msg = parsed.message;
+      else if (body) msg = body;
     } catch {
-      throw new Error(body || `Request failed: ${resp.status}`);
+      if (body) msg = body;
     }
+    throw new Error(msg);
   }
 
   return resp.json();
@@ -112,6 +124,7 @@ export interface ApiRental {
   pickup_location: string;
   // Dual-confirm flags
   renter_collected: boolean;
+  owner_collected: boolean;
   renter_returned: boolean;
   owner_returned: boolean;
   renter_reviewed: boolean;
@@ -156,6 +169,42 @@ export async function confirmReview(rentalId: number, accountId: number): Promis
     method: "PUT",
     body: JSON.stringify({ account_id: accountId }),
   });
+}
+
+// ─── Payment (payment-service via Kong — report / technical diagram) ─────────
+
+export interface ApiPayment {
+  paymentID: number;
+  rentalID: number;
+  renterID: number;
+  amount: number;
+  type: string;
+  status: string;
+  itemName?: string | null;
+  checkout_url?: string;
+  is_late?: boolean;
+  message?: string;
+}
+
+/** Scenario 2: late check + unpaid late-fee row (logic in payment-service). */
+export async function recordOutstandingLateFee(rentalId: number): Promise<ApiPayment> {
+  return request<ApiPayment>("/api/payment/outstanding", {
+    method: "POST",
+    body: JSON.stringify({ rental_id: rentalId }),
+  });
+}
+
+export async function checkoutOutstandingLateFee(
+  paymentId: number
+): Promise<ApiPayment & { checkout_url: string }> {
+  return request<ApiPayment & { checkout_url: string }>(
+    `/api/payment/outstanding/${paymentId}/checkout`,
+    { method: "POST" }
+  );
+}
+
+export async function getPayment(paymentId: number): Promise<ApiPayment> {
+  return request<ApiPayment>(`/api/payment/${paymentId}`);
 }
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
@@ -358,6 +407,11 @@ export async function getDamageClaim(claimId: string): Promise<ApiDamageClaim> {
 /** Get all claims pending staff review. */
 export async function getPendingDamageClaims(): Promise<ApiDamageClaim[]> {
   return request<ApiDamageClaim[]>("/api/damage/pending");
+}
+
+/** Get the most recent damage claim for a rental (owner view). Throws 404 if none. */
+export async function getDamageClaimByRental(rentalId: number): Promise<ApiDamageClaim> {
+  return request<ApiDamageClaim>(`/api/damage/rental/${rentalId}`);
 }
 
 /** Resolve a claim — action: 'approve' | 'reject' */

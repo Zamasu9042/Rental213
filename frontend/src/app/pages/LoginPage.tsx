@@ -20,7 +20,7 @@ export const LoginPage: React.FC = () => {
     setError('');
     setLoading(true);
     try {
-      await login(email, password);
+      await login(email.trim(), password);
       // RootLayout handles role-based redirect; staff goes to /staff-dashboard automatically
       navigate('/');
     } catch (err: unknown) {
@@ -87,7 +87,7 @@ export const LoginPage: React.FC = () => {
               <p className="font-semibold">Test accounts (click a row to fill email and password)</p>
               {[
                 { label: 'Renter', email: 'renter@test.com', password: 'password123' },
-                { label: 'Renter 2', email: 'renter2@test.com', password: 'password123' },
+                { label: 'Renter 2', email: 'renter2check@gmail.com', password: 'password123' },
                 { label: 'Owner', email: 'owner@test.com', password: 'password123' },
                 { label: 'Staff', email: 'staff@test.com', password: 'password123' },
               ].map(({ label, email: e, password: p }) => (

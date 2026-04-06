@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS rental (
   pickup_location VARCHAR(512) NOT NULL,
   -- Dual-confirmation flags
   renter_collected  TINYINT(1) NOT NULL DEFAULT 0,
+  owner_collected   TINYINT(1) NOT NULL DEFAULT 0,
   renter_returned   TINYINT(1) NOT NULL DEFAULT 0,
   owner_returned    TINYINT(1) NOT NULL DEFAULT 0,
   renter_reviewed   TINYINT(1) NOT NULL DEFAULT 0,

@@ -24,6 +24,18 @@ def create_tables():
     Base.metadata.create_all(bind=engine)
 
 
+def ensure_columns():
+    """Add new columns to existing tables without dropping data (safe migration)."""
+    from sqlalchemy import text
+    with engine.begin() as conn:
+        try:
+            conn.execute(text(
+                "ALTER TABLE rental ADD COLUMN owner_collected TINYINT(1) NOT NULL DEFAULT 0"
+            ))
+        except Exception:
+            pass  # Column already exists
+
+
 def get_db():
     db = SessionLocal()
     try:

@@ -17,6 +17,7 @@ class Rental(Base):
     pickup_location = Column(String(512), nullable=False)
     # Dual-confirmation flags
     renter_collected = Column(Boolean, nullable=False, default=False)
+    owner_collected  = Column(Boolean, nullable=False, default=False)
     renter_returned  = Column(Boolean, nullable=False, default=False)
     owner_returned   = Column(Boolean, nullable=False, default=False)
     renter_reviewed  = Column(Boolean, nullable=False, default=False)

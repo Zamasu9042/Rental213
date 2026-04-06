@@ -25,8 +25,13 @@ def health():
 
 @app.post("/account/login")
 def login(body: LoginRequest, db: Session = Depends(get_db)):
-    row = db.query(Account).filter(Account.email == body.email).first()
-    if not row or not bcrypt.checkpw(body.password.encode(), row.password_hash.encode()):
+    email = (body.email or "").strip().lower()
+    # Emails are stored lowercase from ensure_demo_accounts / schema
+    row = db.query(Account).filter(Account.email == email).first()
+    if not row:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    pw_hash = (row.password_hash or "").strip().encode("utf-8")
+    if not bcrypt.checkpw(body.password.encode("utf-8"), pw_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     return {
         "id": str(row.account_id),

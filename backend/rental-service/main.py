@@ -6,12 +6,13 @@ import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from database import create_tables, get_db
+from database import create_tables, ensure_columns, get_db
 from messaging import publish_json
 from models import Rental
 from schemas import ActorBody, RentalCreate, RentalOut, RentalReturnBody, RenterDashboardOut
 
 create_tables()
+ensure_columns()
 
 app = FastAPI(title="Rental Service")
 
@@ -380,16 +381,37 @@ def mark_return(
 
 @app.put("/rental/{rental_id}/collect", response_model=RentalOut)
 def mark_collected(rental_id: int, body: ActorBody, db: Session = Depends(get_db)):
-    """Renter confirms they have collected the equipment: ACTIVE → COLLECTED."""
+    """
+    Renter OR owner confirms pickup.
+    When BOTH have confirmed: ACTIVE → COLLECTED.
+    """
     row = db.query(Rental).filter(Rental.id == rental_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="Rental not found")
     if row.status != STATUS_ACTIVE:
         raise HTTPException(status_code=409, detail="Rental must be ACTIVE to collect")
-    if body.account_id != row.renter_id:
-        raise HTTPException(status_code=403, detail="Only the renter can mark collection")
-    row.renter_collected = True
-    row.status = STATUS_COLLECTED
+
+    is_renter = body.account_id == row.renter_id
+    is_owner = False
+    try:
+        with _equipment_client() as client:
+            eq = _fetch_equipment(client, row.equipment_id)
+            is_owner = body.account_id == eq.get("owner_id")
+    except Exception:
+        pass
+
+    if not is_renter and not is_owner:
+        raise HTTPException(status_code=403, detail="Only renter or owner can confirm pickup")
+
+    if is_renter:
+        row.renter_collected = True
+    if is_owner:
+        row.owner_collected = True
+
+    # Both confirmed → advance to COLLECTED
+    if row.renter_collected and row.owner_collected:
+        row.status = STATUS_COLLECTED
+
     db.commit()
     db.refresh(row)
     return row
@@ -487,4 +509,59 @@ def confirm_review(rental_id: int, body: ActorBody, db: Session = Depends(get_db
 
     db.commit()
     db.refresh(row)
+    return row
+
+
+@app.post("/rental/{rental_id}/mark-late", response_model=RentalOut)
+def mark_late_for_payment_service(rental_id: int, db: Session = Depends(get_db)):
+    """
+    Called by Payment Service after late fee is recorded (Scenario 2).
+    RETURNED + return after due → LATE (blocks browsing until fee paid).
+    """
+    row = db.query(Rental).filter(Rental.id == rental_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Rental not found")
+    if row.status == STATUS_LATE:
+        return row
+    if row.status != STATUS_RETURNED:
+        raise HTTPException(
+            status_code=409,
+            detail="Rental must be RETURNED to transition to LATE",
+        )
+    if not row.return_timestamp or row.return_timestamp <= row.end_time:
+        raise HTTPException(status_code=400, detail="Rental is not late")
+    old = row.status
+    row.status = STATUS_LATE
+    db.commit()
+    db.refresh(row)
+    try:
+        _publish_change_status(
+            row.id, row.equipment_id, row.renter_id, old, STATUS_LATE
+        )
+    except Exception:
+        pass
+    return row
+
+
+@app.post("/rental/{rental_id}/complete-after-late-payment", response_model=RentalOut)
+def complete_after_late_payment(rental_id: int, db: Session = Depends(get_db)):
+    """After late fee Stripe webhook (Scenario 2 step 21)."""
+    row = db.query(Rental).filter(Rental.id == rental_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Rental not found")
+    if row.status != STATUS_LATE:
+        raise HTTPException(
+            status_code=409,
+            detail="Rental must be LATE to complete after late fee payment",
+        )
+    old = row.status
+    row.status = STATUS_COMPLETED
+    db.commit()
+    db.refresh(row)
+    try:
+        _publish_change_status(
+            row.id, row.equipment_id, row.renter_id, old, STATUS_COMPLETED
+        )
+    except Exception:
+        pass
     return row

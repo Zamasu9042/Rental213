@@ -142,15 +142,30 @@ services:
           - POST
           - OPTIONS
 
-  # Stripe Webhook — POST /webhook/stripe
-  - name: camunda-proxy-webhook
-    url: http://camunda-proxy:3001
+  # Payment Service — diagram: POST /payment/payrental, /payment/outstanding, GET /payment/{id}
+  - name: payment-svc
+    url: http://payment-service:8000/payment
+    connect_timeout: 10000
+    read_timeout: 60000
+    routes:
+      - name: payment-route
+        paths:
+          - /api/payment
+        strip_path: true
+        methods:
+          - GET
+          - POST
+          - OPTIONS
+
+  # Stripe Webhook — POST /webhook/stripe → payment-service (report)
+  - name: payment-webhook-svc
+    url: http://payment-service:8000
     connect_timeout: 10000
     read_timeout: 30000
     routes:
-      - name: webhook-route
+      - name: webhook-stripe-route
         paths:
-          - /webhook
+          - /webhook/stripe
         strip_path: false
         methods:
           - POST

@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS account (
 
 -- Passwords are bcrypt hashes of 'password123'
 INSERT IGNORE INTO account (account_id, account_name, phone_no, email, password_hash, role) VALUES
-(1001, 'Demo Renter', '+65-9000-1001', 'renter@test.com', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LeAiZ0jY7Kq1H3pMu', 'renter'),
-(1002, 'Demo Owner', '+65-9000-1002', 'owner@test.com',  '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LeAiZ0jY7Kq1H3pMu', 'owner'),
-(1003, 'Demo Staff', '+65-9000-1003', 'staff@test.com',  '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LeAiZ0jY7Kq1H3pMu', 'staff'),
-(1004, 'Demo Renter 2', '+65-9000-1004', 'renter2@test.com', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LeAiZ0jY7Kq1H3pMu', 'renter');
+(1001, 'Demo Renter', '+65-9000-1001', 'renter@test.com', '$2b$12$r1D9Okz4gN05F/z96YXU9u9D.kp/JZHtYepIFoEL1mIIh.fQIk0bm', 'renter'),
+(1002, 'Demo Owner', '+65-9000-1002', 'owner@test.com',  '$2b$12$r1D9Okz4gN05F/z96YXU9u9D.kp/JZHtYepIFoEL1mIIh.fQIk0bm', 'owner'),
+(1003, 'Demo Staff', '+65-9000-1003', 'staff@test.com',  '$2b$12$r1D9Okz4gN05F/z96YXU9u9D.kp/JZHtYepIFoEL1mIIh.fQIk0bm', 'staff'),
+(1004, 'Demo Renter 2', '+65-9000-1004', 'renter2check@gmail.com', '$2b$12$r1D9Okz4gN05F/z96YXU9u9D.kp/JZHtYepIFoEL1mIIh.fQIk0bm', 'renter');
