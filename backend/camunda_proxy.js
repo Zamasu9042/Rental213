@@ -37,11 +37,11 @@ const stripe = process.env.STRIPE_SECRET_KEY
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || "";
 
 // ─── Camunda 8 SaaS credentials ───────────────────────────────────────────────
-const CAMUNDA_CLIENT_ID     = process.env.CAMUNDA_CLIENT_ID     || "";
-const CAMUNDA_CLIENT_SECRET = process.env.CAMUNDA_CLIENT_SECRET || "";
-const CAMUNDA_CLUSTER_ID    = process.env.CAMUNDA_CLUSTER_ID    || "";
-const CAMUNDA_REGION        = process.env.CAMUNDA_REGION        || "sin-2";
-const CAMUNDA_BASE_URL      = `https://${CAMUNDA_REGION}.zeebe.camunda.io:443/${CAMUNDA_CLUSTER_ID}/v2`;
+const CAMUNDA_CLIENT_ID     = "AQazmsVXl7idqPlY1pMGm~Zh7Gv3Lgxk";
+const CAMUNDA_CLIENT_SECRET = "uH0.fzO7HfUxQ0FTlEe0DsBRe-WVgbxIq_BD0H8rpw422I.1Ig.jGZ~9JVZiU0R8";
+const CAMUNDA_CLUSTER_ID    = "db920878-5333-4352-b103-0803eb907686";
+const CAMUNDA_REGION        = "sin-2";
+const CAMUNDA_BASE_URL      = `https://sin-2.zeebe.camunda.io:443/${CAMUNDA_CLUSTER_ID}/v2`;
 const TOKEN_URL             = "https://login.cloud.camunda.io/oauth/token";
 
 // ─── Service URLs (injected via Docker env, fallback for local dev) ───────────
