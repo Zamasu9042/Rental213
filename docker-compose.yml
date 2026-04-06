@@ -1,0 +1,413 @@
+version: "3.9"
+
+# ─── Shared network ───────────────────────────────────────────────────────────
+networks:
+  rental-net:
+    driver: bridge
+
+# ─── Named volumes ────────────────────────────────────────────────────────────
+volumes:
+  equipment-db-data:
+  rental-db-data:
+  account-db-data:
+  payment-db-data:
+  damage-db-data:
+  reputation-db-data:
+  rabbitmq-data:
+  equipment-images:
+
+services:
+
+  # ─── RabbitMQ ───────────────────────────────────────────────────────────────
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: p2p-rabbitmq
+    hostname: p2p-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+    - "5672:5672"
+    - "15672:15672"
+    volumes:
+    - rabbitmq-data:/var/lib/rabbitmq
+    networks:
+    - rental-net
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  
+  
+
+  # ─── MySQL: Equipment ────────────────────────────────────────────────────────
+  equipment-db:
+    image: mysql:8
+    container_name: p2p-equipment-db
+    environment:
+      MYSQL_ROOT_PASSWORD: root_pass
+      MYSQL_DATABASE: equipment_db
+      MYSQL_USER: equipment
+      MYSQL_PASSWORD: equipment_pass
+    ports:
+      - "3307:3306"
+    volumes:
+      - equipment-db-data:/var/lib/mysql
+    networks:
+      - rental-net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── MySQL: Rental ───────────────────────────────────────────────────────────
+  rental-db:
+    image: mysql:8
+    container_name: p2p-rental-db
+    environment:
+      MYSQL_ROOT_PASSWORD: root_pass
+      MYSQL_DATABASE: rental_db
+      MYSQL_USER: rental
+      MYSQL_PASSWORD: rental_pass
+    ports:
+      - "3308:3306"
+    volumes:
+      - rental-db-data:/var/lib/mysql
+    networks:
+      - rental-net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── MySQL: Account ──────────────────────────────────────────────────────────
+  account-db:
+    image: mysql:8
+    container_name: p2p-account-db
+    environment:
+      MYSQL_ROOT_PASSWORD: root_pass
+      MYSQL_DATABASE: account_db
+      MYSQL_USER: account
+      MYSQL_PASSWORD: account_pass
+    ports:
+      - "3309:3306"
+    volumes:
+      - account-db-data:/var/lib/mysql
+    networks:
+      - rental-net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── MySQL: Payment ──────────────────────────────────────────────────────────
+  payment-db:
+    image: mysql:8
+    container_name: p2p-payment-db
+    environment:
+      MYSQL_ROOT_PASSWORD: root_pass
+      MYSQL_DATABASE: payment_db
+      MYSQL_USER: payment
+      MYSQL_PASSWORD: payment_pass
+    ports:
+      - "3310:3306"
+    volumes:
+      - payment-db-data:/var/lib/mysql
+    networks:
+      - rental-net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── MySQL: Damage Claims ────────────────────────────────────────────────────
+  damage-db:
+    image: mysql:8
+    container_name: p2p-damage-db
+    environment:
+      MYSQL_ROOT_PASSWORD: root_pass
+      MYSQL_DATABASE: damage_db
+      MYSQL_USER: damage
+      MYSQL_PASSWORD: damage_pass
+    ports:
+      - "3311:3306"
+    volumes:
+      - damage-db-data:/var/lib/mysql
+    networks:
+      - rental-net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── MySQL: Reputation ───────────────────────────────────────────────────────
+  reputation-db:
+    image: mysql:8
+    container_name: p2p-reputation-db
+    environment:
+      MYSQL_ROOT_PASSWORD: root_pass
+      MYSQL_DATABASE: reputation_db
+      MYSQL_USER: reputation
+      MYSQL_PASSWORD: reputation_pass
+    ports:
+      - "3312:3306"
+    volumes:
+      - reputation-db-data:/var/lib/mysql
+    networks:
+      - rental-net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Equipment Service (port 8001) ───────────────────────────────────────────
+  equipment-service:
+    build:
+      context: ./backend/equipment-service
+    container_name: p2p-equipment-service
+    environment:
+      DATABASE_URL: mysql+pymysql://equipment:equipment_pass@equipment-db:3306/equipment_db
+    ports:
+      - "8001:8000"
+    volumes:
+      - equipment-images:/app/images
+    networks:
+      - rental-net
+    depends_on:
+      equipment-db:
+        condition: service_healthy
+
+  # ─── Rental Service (port 8002) ──────────────────────────────────────────────
+  rental-service:
+    build:
+      context: ./backend/rental-service
+    container_name: p2p-rental-service
+    environment:
+      DATABASE_URL: mysql+pymysql://rental:rental_pass@rental-db:3306/rental_db
+      EQUIPMENT_SERVICE_URL: http://equipment-service:8000
+      AMQP_HOST: rabbitmq
+      AMQP_PORT: 5672
+      AMQP_EXCHANGE: rental_topic
+    ports:
+      - "8002:8000"
+    networks:
+      - rental-net
+    depends_on:
+      rental-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      equipment-service:
+        condition: service_started
+
+  # ─── Account Service (port 8003) ─────────────────────────────────────────────
+  account-service:
+    build:
+      context: ./backend/account-service
+    container_name: p2p-account-service
+    environment:
+      DATABASE_URL: mysql+pymysql://account:account_pass@account-db:3306/account_db
+    ports:
+      - "8003:8000"
+    networks:
+      - rental-net
+    depends_on:
+      account-db:
+        condition: service_healthy
+
+  # ─── Payment Wrapper (port 8004) ─────────────────────────────────────────────
+  payment-wrapper:
+    build:
+      context: ./backend/payment-wrapper
+    container_name: p2p-payment-wrapper
+    environment:
+      DATABASE_URL: mysql+pymysql://payment:payment_pass@payment-db:3306/payment_db
+      AMQP_HOST: rabbitmq
+      AMQP_PORT: 5672
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+    ports:
+      - "8004:8000"
+    networks:
+      - rental-net
+    depends_on:
+      payment-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  # ─── Notification Service (port 8005) ────────────────────────────────────────
+  notification-service:
+    build:
+      context: ./backend/notification-service
+    container_name: p2p-notification-service
+    environment:
+      AMQP_HOST: rabbitmq
+      AMQP_PORT: 5672
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER:-}
+    ports:
+      - "8005:8000"
+    networks:
+      - rental-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  # ─── Damage Claims Service (port 8006) ───────────────────────────────────────
+  damage-claim-service:
+    build:
+      context: ./backend/damage-claim-service
+    container_name: p2p-damage-claim-service
+    environment:
+      DATABASE_URL: mysql+pymysql://damage:damage_pass@damage-db:3306/damage_db
+    ports:
+      - "8006:8000"
+    networks:
+      - rental-net
+    depends_on:
+      damage-db:
+        condition: service_healthy
+
+  # ─── Vision Service (port 8007) ──────────────────────────────────────────────
+  vision-service:
+    build:
+      context: ./backend/vision-service
+    container_name: p2p-vision-service
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
+    ports:
+      - "8007:8000"
+    networks:
+      - rental-net
+
+  # ─── Reputation Service (port 8008) ──────────────────────────────────────────
+  reputation-service:
+    build:
+      context: ./backend/reputation-microservice
+    container_name: p2p-reputation-service
+    environment:
+      DATABASE_URL: mysql+pymysql://reputation:reputation_pass@reputation-db:3306/reputation_db
+    ports:
+      - "8008:8000"
+    networks:
+      - rental-net
+    depends_on:
+      reputation-db:
+        condition: service_healthy
+
+  # ─── Camunda Proxy (port 3001) ───────────────────────────────────────────────
+  camunda-proxy:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.proxy
+    container_name: p2p-camunda-proxy
+    environment:
+      PORT: 3001
+      RENTAL_SERVICE_URL: http://rental-service:8000
+      FRONTEND_URL: http://localhost:5173
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+    ports:
+      - "3001:3001"
+    networks:
+      - rental-net
+    depends_on:
+      - rental-service
+
+  # ─── Camunda Workers ─────────────────────────────────────────────────────────
+  worker-account:
+    build:
+      context: ./backend/workers
+      dockerfile: Dockerfile.workers
+    container_name: p2p-worker-account
+    command: python worker_account.py
+    environment:
+      ACCOUNT_SERVICE_URL: http://account-service:8000
+    networks:
+      - rental-net
+    depends_on:
+      - account-service
+
+  worker-rental:
+    build:
+      context: ./backend/workers
+      dockerfile: Dockerfile.workers
+    container_name: p2p-worker-rental
+    command: python worker_rental.py
+    environment:
+      RENTAL_SERVICE_URL: http://rental-service:8000
+    networks:
+      - rental-net
+    depends_on:
+      - rental-service
+
+  worker-equipment:
+    build:
+      context: ./backend/workers
+      dockerfile: Dockerfile.workers
+    container_name: p2p-worker-equipment
+    command: python worker_equipment.py
+    environment:
+      EQUIPMENT_SERVICE_URL: http://equipment-service:8000
+    networks:
+      - rental-net
+    depends_on:
+      - equipment-service
+
+  worker-stripe:
+    build:
+      context: ./backend/workers
+      dockerfile: Dockerfile.workers
+    container_name: p2p-worker-stripe
+    command: python worker_stripe.py
+    environment:
+      RENTAL_SERVICE_URL: http://rental-service:8000
+    networks:
+      - rental-net
+    depends_on:
+      - rental-service
+
+  worker-rabbitmq:
+    build:
+      context: ./backend/workers
+      dockerfile: Dockerfile.workers
+    container_name: p2p-worker-rabbitmq
+    command: python worker_rabbitmq.py
+    environment:
+      RABBITMQ_HOST: rabbitmq
+    networks:
+      - rental-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  # ─── Kong API Gateway ────────────────────────────────────────────────────────
+  kong:
+    image: kong:3.7
+    container_name: p2p-kong
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /usr/local/kong/declarative/kong.yml
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+    ports:
+      - "8000:8000"
+      - "8009:8001"
+    volumes:
+      - ./infra/kong.yml:/usr/local/kong/declarative/kong.yml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - rental-net
