@@ -7,6 +7,9 @@ plugins:
     config:
       origins:
         - "http://localhost:5173"
+        - "http://localhost:5174"
+        - "http://127.0.0.1:5173"
+        - "http://127.0.0.1:5174"
         - "http://localhost:3000"
       methods:
         - GET
@@ -100,6 +103,39 @@ services:
       - name: account-route
         paths:
           - /api/account
+        strip_path: true
+        methods:
+          - GET
+          - POST
+          - OPTIONS
+
+  # Reputation Service — POST /api/reputation/item, POST /api/reputation/user/:id, GET scores
+  - name: reputation-svc
+    url: http://reputation-service:8000/reputation
+    connect_timeout: 10000
+    read_timeout: 30000
+    routes:
+      - name: reputation-route
+        paths:
+          - /api/reputation
+        strip_path: true
+        methods:
+          - GET
+          - POST
+          - PUT
+          - OPTIONS
+
+  # Damage Claim Service — POST /api/damage/claim, POST /api/damage/photo, POST /api/damage/analyze,
+  #                         GET /api/damage/pending, GET /api/damage/:id, GET /api/damage/files/...
+  #                         POST /api/damage/:id/resolve
+  - name: damage-claim-svc
+    url: http://damage-claim-service:8000/damage
+    connect_timeout: 10000
+    read_timeout: 60000
+    routes:
+      - name: damage-claim-route
+        paths:
+          - /api/damage
         strip_path: true
         methods:
           - GET

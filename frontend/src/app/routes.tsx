@@ -10,6 +10,7 @@ import { MyListingsPage } from './pages/MyListingsPage';
 import { ListingDetailPage } from './pages/ListingDetailPage';
 import { DamageClaimPage } from './pages/DamageClaimPage';
 import { DamageClaimResultPage } from './pages/DamageClaimResultPage';
+import { StaffDashboardPage } from './pages/StaffDashboardPage';
 import { AccountLimitedPage } from './pages/AccountLimitedPage';
 import { ReviewPage } from './pages/ReviewPage';
 import { AddListingPage } from './pages/AddListingPage';
@@ -66,7 +67,7 @@ export const router = createBrowserRouter([
         element: <AddListingPage />,
       },
       {
-        path: 'damage-claim/:id',
+        path: 'damage-claim/:rentalId',
         element: <DamageClaimPage />,
       },
       {
@@ -76,6 +77,10 @@ export const router = createBrowserRouter([
       {
         path: 'review/:rentalId',
         element: <ReviewPage />,
+      },
+      {
+        path: 'staff-dashboard',
+        element: <StaffDashboardPage />,
       },
       {
         path: 'account-limited',

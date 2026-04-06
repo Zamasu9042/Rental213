@@ -7,6 +7,7 @@
  *   GET  /api/equipment/:id      → equipment-service
  *   GET  /api/rental/renter/:id/dashboard → rental-service
  *   GET  /api/rental/:id         → rental-service
+ *   POST /api/reputation/item, /api/reputation/user/:id → reputation-service
  *   POST /api/rentals            → camunda-proxy (starts workflow)
  *   GET  /api/rentals/:key/stripe-url → camunda-proxy (polls for Stripe URL)
  *
@@ -105,10 +106,16 @@ export interface ApiRental {
   equipment_id: number;
   start_time: string;
   end_time: string;
-  status: string;
+  status: string;  // PENDING | ACTIVE | COLLECTED | RETURNED | COMPLETED | LATE
   return_timestamp: string | null;
   hourly_rate: number;
   pickup_location: string;
+  // Dual-confirm flags
+  renter_collected: boolean;
+  renter_returned: boolean;
+  owner_returned: boolean;
+  renter_reviewed: boolean;
+  owner_reviewed: boolean;
 }
 
 export interface RenterDashboard {
@@ -127,6 +134,30 @@ export async function getRental(rentalId: number): Promise<ApiRental> {
   return request<ApiRental>(`/api/rental/${rentalId}`);
 }
 
+/** Renter marks equipment as collected (ACTIVE → COLLECTED) */
+export async function markCollected(rentalId: number, accountId: number): Promise<ApiRental> {
+  return request<ApiRental>(`/api/rental/${rentalId}/collect`, {
+    method: "PUT",
+    body: JSON.stringify({ account_id: accountId }),
+  });
+}
+
+/** Renter or Owner confirms the return (COLLECTED → RETURNED when both done) */
+export async function confirmReturn(rentalId: number, accountId: number): Promise<ApiRental> {
+  return request<ApiRental>(`/api/rental/${rentalId}/confirm-return`, {
+    method: "PUT",
+    body: JSON.stringify({ account_id: accountId }),
+  });
+}
+
+/** Renter or Owner confirms their review (RETURNED → COMPLETED when both done) */
+export async function confirmReview(rentalId: number, accountId: number): Promise<ApiRental> {
+  return request<ApiRental>(`/api/rental/${rentalId}/confirm-review`, {
+    method: "PUT",
+    body: JSON.stringify({ account_id: accountId }),
+  });
+}
+
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
 export interface LoginResponse {
@@ -134,6 +165,7 @@ export interface LoginResponse {
   name: string;
   email: string;
   phone: string;
+  role: string;
 }
 
 export async function loginUser(email: string, password: string): Promise<LoginResponse> {
@@ -141,6 +173,84 @@ export async function loginUser(email: string, password: string): Promise<LoginR
     method: "POST",
     body: JSON.stringify({ email, password }),
   });
+}
+
+/** Public account fields (no password) — for displaying owner/renter contact on rentals */
+export interface ApiAccountPublic {
+  id: string;
+  accountID: number;
+  accountName: string;
+  phoneNo: string;
+  email: string;
+}
+
+export async function getAccount(accountId: number): Promise<ApiAccountPublic> {
+  return request<ApiAccountPublic>(`/api/account/${accountId}`);
+}
+
+// ─── Reputation (reputation-microservice via Kong) ──────────────────────────
+
+export interface ReputationEntryResponse {
+  id: number;
+  user_id: number;
+  target_id: number;
+  target_type: string;
+  score: number;
+  review_text: string | null;
+  rater_id: number | null;
+  rental_id: number | null;
+  timestamp: string | null;
+}
+
+/** Rate equipment (rater ≠ owner). Score 0–5. */
+export async function submitItemRating(body: {
+  rater_id: number;
+  equipment_id: number;
+  owner_id: number;
+  rental_id: number;
+  score: number;
+  review_text?: string | null;
+}): Promise<ReputationEntryResponse> {
+  return request<ReputationEntryResponse>("/api/reputation/item", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Rate the other party (RENTER or OWNER). `ratedUserId` is the account being rated. */
+export async function submitUserRating(
+  ratedUserId: number,
+  body: {
+    rater_id: number;
+    rental_id: number;
+    target_type: "RENTER" | "OWNER";
+    score: number;
+    review_text?: string | null;
+  }
+): Promise<ReputationEntryResponse> {
+  return request<ReputationEntryResponse>(`/api/reputation/user/${ratedUserId}`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** ITEM ratings for an equipment listing (browse / detail page) via Kong → reputation-service */
+export interface ItemReputationSummary {
+  equipment_id: number;
+  average_score: number | null;
+  total_entries: number;
+  entries: Array<{
+    id: number;
+    score: number;
+    review_text: string | null;
+    rater_id: number | null;
+    rental_id: number | null;
+    created_at: string | null;
+  }>;
+}
+
+export async function getEquipmentItemReputation(equipmentId: number): Promise<ItemReputationSummary> {
+  return request<ItemReputationSummary>(`/api/reputation/item/${equipmentId}`);
 }
 
 // ─── Start rental workflow (through camunda-proxy) ───────────────────────────
@@ -182,4 +292,89 @@ export async function pollStripeUrl(processInstanceKey: string, maxAttempts = 15
     if (data.stripeRedirectUrl) return data.stripeRedirectUrl;
   }
   throw new Error("Timed out waiting for Stripe redirect URL. Make sure the backend services are running.");
+}
+
+// ─── Equipment Rentals (owner view) ──────────────────────────────────────────
+
+/** Fetch all rentals for a given equipment (owner can see who rented and file damage claims). */
+export async function getRentalsForEquipment(equipmentId: string | number): Promise<ApiRental[]> {
+  return request<ApiRental[]>(`/api/rental/equipment/${equipmentId}/rentals`);
+}
+
+// ─── Damage Claims ────────────────────────────────────────────────────────────
+
+export interface ApiDamageClaim {
+  claimID: string;
+  rentalID: number;
+  photoURL: string | null;   // relative path e.g. /damage/files/filename.jpg
+  damageType: string | null;
+  confidence: number | null;
+  severity: string | null;
+  status: string;            // DRAFT | PENDING_STAFF_REVIEW | APPROVED | REJECTED
+  created_at: string | null;
+  analyzed_at: string | null;
+  analysis: Record<string, unknown> | null;
+}
+
+/** Create a new damage claim record for a rental. Returns claim in DRAFT status. */
+export async function createDamageClaim(rentalId: number): Promise<ApiDamageClaim> {
+  return request<ApiDamageClaim>("/api/damage/claim", {
+    method: "POST",
+    body: JSON.stringify({ rental_id: rentalId }),
+  });
+}
+
+/** Upload a damage photo for an existing claim. Uses multipart/form-data. */
+export async function uploadDamagePhoto(claimId: string, file: File): Promise<{ claimID: string; photoURL: string }> {
+  const form = new FormData();
+  form.append("claim_id", claimId);
+  form.append("file", file);
+  let resp: Response;
+  try {
+    resp = await fetch(`${API_BASE}/api/damage/photo`, { method: "POST", body: form });
+  } catch (e) {
+    throw new Error(e instanceof Error ? e.message : "Network error uploading photo");
+  }
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new Error(body || `Upload failed: ${resp.status}`);
+  }
+  return resp.json();
+}
+
+/** Trigger AI analysis on the uploaded photo. Returns updated claim with Vision results. */
+export async function analyzeDamageClaim(claimId: string): Promise<ApiDamageClaim> {
+  return request<ApiDamageClaim>("/api/damage/analyze", {
+    method: "POST",
+    body: JSON.stringify({ claim_id: claimId }),
+  });
+}
+
+/** Fetch a single damage claim by ID. */
+export async function getDamageClaim(claimId: string): Promise<ApiDamageClaim> {
+  return request<ApiDamageClaim>(`/api/damage/${claimId}`);
+}
+
+/** Get all claims pending staff review. */
+export async function getPendingDamageClaims(): Promise<ApiDamageClaim[]> {
+  return request<ApiDamageClaim[]>("/api/damage/pending");
+}
+
+/** Resolve a claim — action: 'approve' | 'reject' */
+export async function resolveDamageClaim(claimId: string, action: "approve" | "reject"): Promise<ApiDamageClaim> {
+  return request<ApiDamageClaim>(`/api/damage/${claimId}/resolve`, {
+    method: "POST",
+    body: JSON.stringify({ action }),
+  });
+}
+
+/**
+ * Build the full URL for a damage photo.
+ * Stored path: /damage/files/filename.jpg
+ * Kong route: /api/damage (strip_path:true) → service gets /damage/files/filename.jpg
+ * So frontend URL must be /api/damage/files/filename.jpg (strip leading /damage from stored path).
+ */
+export function damagePhotoUrl(relPath: string): string {
+  const withoutDamagePrefix = relPath.replace(/^\/damage/, '');
+  return `${API_BASE}/api/damage${withoutDamagePrefix}`;
 }

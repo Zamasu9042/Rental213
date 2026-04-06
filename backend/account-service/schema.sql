@@ -11,10 +11,13 @@ CREATE TABLE IF NOT EXISTS account (
   phone_no VARCHAR(64) NOT NULL,
   email VARCHAR(255) NOT NULL UNIQUE,
   password_hash VARCHAR(255) NOT NULL,
+  role VARCHAR(32) NOT NULL DEFAULT 'renter',
   KEY ix_account_account_id (account_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Passwords are bcrypt hashes of 'password123'
-INSERT IGNORE INTO account (account_id, account_name, phone_no, email, password_hash) VALUES
-(1001, 'Demo Renter', '+65-9000-1001', 'renter@test.com', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LeAiZ0jY7Kq1H3pMu'),
-(1002, 'Demo Owner', '+65-9000-1002', 'owner@test.com',  '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LeAiZ0jY7Kq1H3pMu');
+INSERT IGNORE INTO account (account_id, account_name, phone_no, email, password_hash, role) VALUES
+(1001, 'Demo Renter', '+65-9000-1001', 'renter@test.com', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LeAiZ0jY7Kq1H3pMu', 'renter'),
+(1002, 'Demo Owner', '+65-9000-1002', 'owner@test.com',  '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LeAiZ0jY7Kq1H3pMu', 'owner'),
+(1003, 'Demo Staff', '+65-9000-1003', 'staff@test.com',  '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LeAiZ0jY7Kq1H3pMu', 'staff'),
+(1004, 'Demo Renter 2', '+65-9000-1004', 'renter2@test.com', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LeAiZ0jY7Kq1H3pMu', 'renter');

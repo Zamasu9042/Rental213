@@ -81,6 +81,44 @@ def user_scores(db: Session, user_id: int) -> Dict[str, Any]:
     }
 
 
+def item_scores(db: Session, equipment_id: int) -> Dict[str, Any]:
+    """Aggregate ITEM ratings where target_id is the equipment listing."""
+    rows: List[ReputationRow] = (
+        db.query(ReputationRow)
+        .filter(
+            ReputationRow.target_type == "ITEM",
+            ReputationRow.target_id == equipment_id,
+        )
+        .order_by(ReputationRow.created_at.desc())
+        .all()
+    )
+    if not rows:
+        return {
+            "equipment_id": equipment_id,
+            "average_score": None,
+            "total_entries": 0,
+            "entries": [],
+        }
+    total = sum(Decimal(str(r.score)) for r in rows)
+    avg = (total / len(rows)).quantize(Decimal("0.01"))
+    return {
+        "equipment_id": equipment_id,
+        "average_score": float(avg),
+        "total_entries": len(rows),
+        "entries": [
+            {
+                "id": r.id,
+                "score": float(Decimal(str(r.score))),
+                "review_text": r.review_text,
+                "rater_id": r.rater_id,
+                "rental_id": r.rental_id,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ],
+    }
+
+
 def apply_penalty(db: Session, user_id: int, points: Decimal) -> ReputationRow:
     neg = -abs(points)
     return add_entry(

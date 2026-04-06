@@ -1,4 +1,4 @@
-from sqlalchemy import Column, DateTime, Integer, Numeric, String
+from sqlalchemy import Boolean, Column, DateTime, Integer, Numeric, String
 
 from database import Base
 
@@ -15,3 +15,9 @@ class Rental(Base):
     return_timestamp = Column(DateTime, nullable=True)
     hourly_rate = Column(Numeric(10, 2), nullable=False)
     pickup_location = Column(String(512), nullable=False)
+    # Dual-confirmation flags
+    renter_collected = Column(Boolean, nullable=False, default=False)
+    renter_returned  = Column(Boolean, nullable=False, default=False)
+    owner_returned   = Column(Boolean, nullable=False, default=False)
+    renter_reviewed  = Column(Boolean, nullable=False, default=False)
+    owner_reviewed   = Column(Boolean, nullable=False, default=False)

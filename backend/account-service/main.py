@@ -4,10 +4,11 @@ from pydantic import BaseModel
 import bcrypt
 from sqlalchemy.orm import Session
 
-from database import create_tables, get_db
+from database import create_tables, ensure_demo_accounts, get_db
 from models import Account
 
 create_tables()
+ensure_demo_accounts()
 
 app = FastAPI(title="Account Info Service")
 
@@ -32,6 +33,7 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
         "name": row.account_name,
         "email": row.email,
         "phone": row.phone_no,
+        "role": row.role,
     }
 
 

@@ -57,6 +57,8 @@ services:
       MYSQL_ROOT_PASSWORD: root_rental
     volumes:
       - rental_mysql_data:/var/lib/mysql
+      - ./rental-service/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./rental-service/seed-data.sql:/docker-entrypoint-initdb.d/02-seed-data.sql:ro
     ports:
       - "3308:3306"
     healthcheck:
@@ -450,5 +452,6 @@ services:
       - equipment-service
       - rental-service
       - camunda-proxy
+      - reputation-service
     networks:
       - esd-net

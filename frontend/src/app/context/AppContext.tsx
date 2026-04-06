@@ -31,6 +31,7 @@ export interface User {
   name: string;
   email: string;
   phone?: string;
+  role: 'renter' | 'owner' | 'staff';
   hasUnpaidFees: boolean;
   unpaidAmount?: number;
 }
@@ -99,6 +100,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       name: account.name,
       email: account.email,
       phone: account.phone,
+      role: (account.role as 'renter' | 'owner' | 'staff') ?? 'renter',
       hasUnpaidFees: false,
     });
     setRentals([]);

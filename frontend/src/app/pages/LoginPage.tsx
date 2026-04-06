@@ -21,6 +21,7 @@ export const LoginPage: React.FC = () => {
     setLoading(true);
     try {
       await login(email, password);
+      // RootLayout handles role-based redirect; staff goes to /staff-dashboard automatically
       navigate('/');
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Invalid email or password');
@@ -28,6 +29,8 @@ export const LoginPage: React.FC = () => {
       setLoading(false);
     }
   };
+
+  const fillCredentials = (e: string, p: string) => { setEmail(e); setPassword(p); };
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 px-4">
@@ -80,10 +83,28 @@ export const LoginPage: React.FC = () => {
               ) : 'Sign In'}
             </Button>
 
-            <div className="bg-gray-50 border border-gray-200 rounded-md p-3 text-xs text-gray-600 space-y-1">
-              <p className="font-semibold">Test accounts:</p>
-              <p>Renter: <span className="font-mono">renter@test.com</span> / <span className="font-mono">password123</span></p>
-              <p>Owner: <span className="font-mono">owner@test.com</span> / <span className="font-mono">password123</span></p>
+            <div className="bg-gray-50 border border-gray-200 rounded-md p-3 text-xs text-gray-600 space-y-3">
+              <p className="font-semibold">Test accounts (click a row to fill email and password)</p>
+              {[
+                { label: 'Renter', email: 'renter@test.com', password: 'password123' },
+                { label: 'Renter 2', email: 'renter2@test.com', password: 'password123' },
+                { label: 'Owner', email: 'owner@test.com', password: 'password123' },
+                { label: 'Staff', email: 'staff@test.com', password: 'password123' },
+              ].map(({ label, email: e, password: p }) => (
+                <button
+                  key={e}
+                  type="button"
+                  onClick={() => fillCredentials(e, p)}
+                  className="w-full text-left hover:bg-gray-100 rounded px-2 py-2 transition-colors border border-transparent hover:border-gray-200"
+                >
+                  <span className="font-medium text-gray-800 block mb-1">{label}</span>
+                  <span className="text-gray-500">Email: </span>
+                  <span className="font-mono text-gray-800">{e}</span>
+                  <br />
+                  <span className="text-gray-500">Password: </span>
+                  <span className="font-mono text-gray-800">{p}</span>
+                </button>
+              ))}
             </div>
           </form>
         </CardContent>

@@ -19,6 +19,7 @@ app = FastAPI(title="Damage Claim Service")
 create_tables()
 
 PHOTO_DIR = Path(os.getenv("PHOTO_STORAGE_DIR", "/data/photos"))
+# Used internally (Docker network) so Vision service can reach photos when real API key is set
 DAMAGE_PUBLIC_BASE = os.getenv(
     "DAMAGE_PUBLIC_BASE", "http://damage-claim-service:8000"
 ).rstrip("/")
@@ -27,6 +28,8 @@ VISION_URL = os.getenv("VISION_SERVICE_URL", "http://vision-service:8000").rstri
 
 STATUS_DRAFT = "DRAFT"
 STATUS_PENDING_REVIEW = "PENDING_STAFF_REVIEW"
+STATUS_APPROVED = "APPROVED"
+STATUS_REJECTED = "REJECTED"
 
 
 @app.on_event("startup")
@@ -52,7 +55,7 @@ def _row_to_api(row: DamageClaim) -> dict[str, Any]:
     return {
         "claimID": str(row.id),
         "rentalID": row.rental_id,
-        "photoURL": row.photo_url,
+        "photoURL": row.photo_url,   # relative path e.g. /damage/files/filename.jpg
         "damageType": row.damage_type,
         "confidence": conf_out,
         "severity": row.severity,
@@ -107,12 +110,12 @@ async def upload_photo(
     dest = PHOTO_DIR / name
     content = await file.read()
     dest.write_bytes(content)
+    # Store as relative path — frontend will prepend Kong base URL
     rel = f"/damage/files/{name}"
-    photo_url = f"{DAMAGE_PUBLIC_BASE}{rel}"
-    row.photo_url = photo_url
+    row.photo_url = rel
     db.commit()
     db.refresh(row)
-    return {"claimID": str(cid), "photoURL": photo_url}
+    return {"claimID": str(cid), "photoURL": rel}
 
 
 class AnalyzeBody(BaseModel):
@@ -129,9 +132,11 @@ def analyze_claim(body: AnalyzeBody, db: Session = Depends(get_db)):
     if not photo:
         raise HTTPException(status_code=400, detail="Upload a photo before analyze")
 
-    image_url = photo
+    # Build internal URL for Vision API (Docker-internal, works even without public access)
     if photo.startswith("/damage/files/"):
         image_url = f"{DAMAGE_PUBLIC_BASE}{photo}"
+    else:
+        image_url = photo
 
     try:
         with httpx.Client(base_url=VISION_URL, timeout=60.0) as client:
@@ -167,6 +172,33 @@ def list_pending_staff(db: Session = Depends(get_db)):
         .all()
     )
     return [_row_to_api(r) for r in rows]
+
+
+class ResolveBody(BaseModel):
+    action: str  # "approve" or "reject"
+
+
+@app.post("/damage/{claim_id}/resolve")
+def resolve_claim(claim_id: str, body: ResolveBody, db: Session = Depends(get_db)):
+    """Staff/owner resolves a damage claim after AI analysis."""
+    cid = _parse_claim_id(claim_id)
+    row = db.query(DamageClaim).filter(DamageClaim.id == cid).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Claim not found")
+    if row.status not in (STATUS_PENDING_REVIEW,):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Claim must be in {STATUS_PENDING_REVIEW} status to resolve",
+        )
+    if body.action == "approve":
+        row.status = STATUS_APPROVED
+    elif body.action == "reject":
+        row.status = STATUS_REJECTED
+    else:
+        raise HTTPException(status_code=400, detail="action must be 'approve' or 'reject'")
+    db.commit()
+    db.refresh(row)
+    return _row_to_api(row)
 
 
 @app.get("/damage/{claim_id}")

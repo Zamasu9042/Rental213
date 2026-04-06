@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from database import create_tables, get_db
 from messaging import publish_json
 from models import Rental
-from schemas import RentalCreate, RentalOut, RentalReturnBody, RenterDashboardOut
+from schemas import ActorBody, RentalCreate, RentalOut, RentalReturnBody, RenterDashboardOut
 
 create_tables()
 
@@ -19,11 +19,12 @@ EQUIPMENT_SERVICE_URL = os.getenv(
     "EQUIPMENT_SERVICE_URL", "http://localhost:8001"
 ).rstrip("/")
 
-STATUS_PENDING = "PENDING"
-STATUS_ACTIVE = "ACTIVE"
-STATUS_LATE = "LATE"
-STATUS_RETURNED = "RETURNED"
+STATUS_PENDING   = "PENDING"
+STATUS_ACTIVE    = "ACTIVE"
+STATUS_COLLECTED = "COLLECTED"
+STATUS_RETURNED  = "RETURNED"
 STATUS_COMPLETED = "COMPLETED"
+STATUS_LATE      = "LATE"
 
 BLOCKING_RENTAL_STATUSES = frozenset({STATUS_PENDING, STATUS_LATE})
 
@@ -153,6 +154,18 @@ def list_rentals_for_renter(renter_id: int, db: Session = Depends(get_db)):
     rows = (
         db.query(Rental)
         .filter(Rental.renter_id == renter_id)
+        .order_by(Rental.id.desc())
+        .all()
+    )
+    return rows
+
+
+@app.get("/rental/equipment/{equipment_id}/rentals", response_model=List[RentalOut])
+def list_rentals_for_equipment(equipment_id: int, db: Session = Depends(get_db)):
+    """Return all rentals for a given equipment (owner view — for filing damage claims)."""
+    rows = (
+        db.query(Rental)
+        .filter(Rental.equipment_id == equipment_id)
         .order_by(Rental.id.desc())
         .all()
     )
@@ -360,4 +373,118 @@ def mark_return(
     except Exception:
         pass
 
+    return row
+
+
+# ── New lifecycle endpoints ──────────────────────────────────────────────────
+
+@app.put("/rental/{rental_id}/collect", response_model=RentalOut)
+def mark_collected(rental_id: int, body: ActorBody, db: Session = Depends(get_db)):
+    """Renter confirms they have collected the equipment: ACTIVE → COLLECTED."""
+    row = db.query(Rental).filter(Rental.id == rental_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Rental not found")
+    if row.status != STATUS_ACTIVE:
+        raise HTTPException(status_code=409, detail="Rental must be ACTIVE to collect")
+    if body.account_id != row.renter_id:
+        raise HTTPException(status_code=403, detail="Only the renter can mark collection")
+    row.renter_collected = True
+    row.status = STATUS_COLLECTED
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@app.put("/rental/{rental_id}/confirm-return", response_model=RentalOut)
+def confirm_return(rental_id: int, body: ActorBody, db: Session = Depends(get_db)):
+    """
+    Renter OR owner confirms the return.
+    When BOTH have confirmed: COLLECTED → RETURNED and equipment marked available.
+    """
+    row = db.query(Rental).filter(Rental.id == rental_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Rental not found")
+    if row.status != STATUS_COLLECTED:
+        raise HTTPException(status_code=409, detail="Rental must be COLLECTED to confirm return")
+
+    # Determine actor — must be renter or owner (owner looked up via equipment)
+    is_renter = body.account_id == row.renter_id
+    # For owner check we need equipment owner_id — fetch from equipment service
+    is_owner = False
+    try:
+        with _equipment_client() as client:
+            eq = _fetch_equipment(client, row.equipment_id)
+            is_owner = body.account_id == eq.get("owner_id")
+    except Exception:
+        pass
+
+    if not is_renter and not is_owner:
+        raise HTTPException(status_code=403, detail="Only renter or owner can confirm return")
+
+    if is_renter:
+        row.renter_returned = True
+    if is_owner:
+        row.owner_returned = True
+
+    # Both confirmed → advance to RETURNED
+    if row.renter_returned and row.owner_returned:
+        ret_ts = datetime.now(timezone.utc).replace(tzinfo=None)
+        row.return_timestamp = ret_ts
+        row.status = STATUS_RETURNED
+        # Mark equipment available again
+        try:
+            with _equipment_client() as client:
+                _put_equipment(client, row.equipment_id, {"status": "available"})
+        except Exception:
+            pass
+        try:
+            _publish_change_status(row.id, row.equipment_id, row.renter_id, STATUS_COLLECTED, STATUS_RETURNED)
+            if ret_ts > row.end_time:
+                _publish_late_fee(row.id, row.equipment_id, row.renter_id, row.end_time, ret_ts)
+        except Exception:
+            pass
+
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@app.put("/rental/{rental_id}/confirm-review", response_model=RentalOut)
+def confirm_review(rental_id: int, body: ActorBody, db: Session = Depends(get_db)):
+    """
+    Renter OR owner leaves their review.
+    When BOTH have reviewed: RETURNED → COMPLETED.
+    """
+    row = db.query(Rental).filter(Rental.id == rental_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Rental not found")
+    if row.status != STATUS_RETURNED:
+        raise HTTPException(status_code=409, detail="Rental must be RETURNED to review")
+
+    is_renter = body.account_id == row.renter_id
+    is_owner = False
+    try:
+        with _equipment_client() as client:
+            eq = _fetch_equipment(client, row.equipment_id)
+            is_owner = body.account_id == eq.get("owner_id")
+    except Exception:
+        pass
+
+    if not is_renter and not is_owner:
+        raise HTTPException(status_code=403, detail="Only renter or owner can leave a review")
+
+    if is_renter:
+        row.renter_reviewed = True
+    if is_owner:
+        row.owner_reviewed = True
+
+    if row.renter_reviewed and row.owner_reviewed:
+        row.status = STATUS_COMPLETED
+        try:
+            _publish_change_status(row.id, row.equipment_id, row.renter_id, STATUS_RETURNED, STATUS_COMPLETED)
+        except Exception:
+            pass
+
+    db.commit()
+    db.refresh(row)
     return row
