@@ -172,6 +172,92 @@ services:
       retries: 5
       start_period: 25s
     networks: [esd-net]
+  # ── Camunda Workers ────────────────────────────────────────────────────────────
+# Add these services to the bottom of docker-compose.backend.yml
+# They all share the same Docker image but run different worker scripts.
+
+  worker-account:
+    build:
+      context: ./workers
+      dockerfile: Dockerfile.workers
+    command: python worker_account.py
+    restart: unless-stopped
+    environment:
+      CAMUNDA_CLIENT_ID: ${CAMUNDA_CLIENT_ID}
+      CAMUNDA_CLIENT_SECRET: ${CAMUNDA_CLIENT_SECRET}
+      CAMUNDA_CLUSTER_ID: ${CAMUNDA_CLUSTER_ID}
+      CAMUNDA_REGION: ${CAMUNDA_REGION:-sin-2}
+      ACCOUNT_SERVICE_URL: http://account-service:8000
+    depends_on:
+      account-service:
+        condition: service_healthy
+    networks: [esd-net]
+
+  worker-rental:
+    build:
+      context: ./workers
+      dockerfile: Dockerfile.workers
+    command: python worker_rental.py
+    restart: unless-stopped
+    environment:
+      CAMUNDA_CLIENT_ID: ${CAMUNDA_CLIENT_ID}
+      CAMUNDA_CLIENT_SECRET: ${CAMUNDA_CLIENT_SECRET}
+      CAMUNDA_CLUSTER_ID: ${CAMUNDA_CLUSTER_ID}
+      CAMUNDA_REGION: ${CAMUNDA_REGION:-sin-2}
+      RENTAL_SERVICE_URL: http://rental-service:8000
+    depends_on:
+      rental-service:
+        condition: service_healthy
+    networks: [esd-net]
+
+  worker-equipment:
+    build:
+      context: ./workers
+      dockerfile: Dockerfile.workers
+    command: python worker_equipment.py
+    restart: unless-stopped
+    environment:
+      CAMUNDA_CLIENT_ID: ${CAMUNDA_CLIENT_ID}
+      CAMUNDA_CLIENT_SECRET: ${CAMUNDA_CLIENT_SECRET}
+      CAMUNDA_CLUSTER_ID: ${CAMUNDA_CLUSTER_ID}
+      CAMUNDA_REGION: ${CAMUNDA_REGION:-sin-2}
+      EQUIPMENT_SERVICE_URL: http://equipment-service:8000
+    depends_on:
+      equipment-service:
+        condition: service_healthy
+    networks: [esd-net]
+
+  worker-stripe:
+    build:
+      context: ./workers
+      dockerfile: Dockerfile.workers
+    command: python worker_stripe.py
+    restart: unless-stopped
+    environment:
+      CAMUNDA_CLIENT_ID: ${CAMUNDA_CLIENT_ID}
+      CAMUNDA_CLIENT_SECRET: ${CAMUNDA_CLIENT_SECRET}
+      CAMUNDA_CLUSTER_ID: ${CAMUNDA_CLUSTER_ID}
+      CAMUNDA_REGION: ${CAMUNDA_REGION:-sin-2}
+    networks: [esd-net]
+
+  worker-rabbitmq:
+    build:
+      context: ./workers
+      dockerfile: Dockerfile.workers
+    command: python worker_rabbitmq.py
+    restart: unless-stopped
+    environment:
+      CAMUNDA_CLIENT_ID: ${CAMUNDA_CLIENT_ID}
+      CAMUNDA_CLIENT_SECRET: ${CAMUNDA_CLIENT_SECRET}
+      CAMUNDA_CLUSTER_ID: ${CAMUNDA_CLUSTER_ID}
+      CAMUNDA_REGION: ${CAMUNDA_REGION:-sin-2}
+      AMQP_HOST: rabbitmq
+      AMQP_PORT: "5672"
+      AMQP_EXCHANGE: rental_topic
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks: [esd-net]
 
   # ── Stripe payment wrapper ─────────────────────────────────────────────────
 

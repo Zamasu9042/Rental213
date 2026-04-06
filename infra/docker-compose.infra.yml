@@ -36,10 +36,10 @@ services:
       - "3307:3306"
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot_equipment"]
-      interval: 5s
-      timeout: 5s
-      retries: 18
-      start_period: 30s
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 90s
     networks: [esd-net]
 
   rental-db:

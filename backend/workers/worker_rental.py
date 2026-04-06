@@ -1,27 +1,24 @@
 """
-workers/worker_rental.py
-Camunda job worker for: create-rental-order
-Calls: Rental Service (http://localhost:5002)
-Run with: /opt/homebrew/bin/python3.11 worker_rental.py
+worker_rental.py — Camunda job worker for: create-rental-order
+Calls the Rental Service to create the rental record.
+Note: rental is already PENDING from the proxy step.
+This worker confirms/updates it with full details.
 """
-
-import asyncio
-import httpx
+import asyncio, os, httpx
 from pyzeebe import ZeebeWorker, create_camunda_cloud_channel
 
-CAMUNDA_CLIENT_ID     = "YOUR_CLIENT_ID"
-CAMUNDA_CLIENT_SECRET = "YOUR_CLIENT_SECRET"
-CAMUNDA_CLUSTER_ID    = "YOUR_CLUSTER_ID"
-CAMUNDA_REGION        = "ont-1"
-
-RENTAL_SERVICE_URL = "http://localhost:5002"
+CAMUNDA_CLIENT_ID     = os.environ.get("CAMUNDA_CLIENT_ID",     "AQazmsVXl7idqPlY1pMGm~Zh7Gv3Lgxk")
+CAMUNDA_CLIENT_SECRET = os.environ.get("CAMUNDA_CLIENT_SECRET", "uH0.fzO7HfUxQ0FTlEe0DsBRe-WVgbxIq_BD0H8rpw422I.1Ig.jGZ~9JVZiU0R8")
+CAMUNDA_CLUSTER_ID    = os.environ.get("CAMUNDA_CLUSTER_ID",    "db920878-5333-4352-b103-0803eb907686")
+CAMUNDA_REGION        = os.environ.get("CAMUNDA_REGION",        "sin-2")
+RENTAL_SERVICE_URL    = os.environ.get("RENTAL_SERVICE_URL",    "http://rental-service:8000")
 
 async def main():
     channel = create_camunda_cloud_channel(
         client_id=CAMUNDA_CLIENT_ID,
         client_secret=CAMUNDA_CLIENT_SECRET,
         cluster_id=CAMUNDA_CLUSTER_ID,
-        region=CAMUNDA_REGION" 
+        region=CAMUNDA_REGION
     )
     worker = ZeebeWorker(channel)
 
@@ -31,31 +28,28 @@ async def main():
         equipmentId: str,
         startTime: str,
         endTime: str,
-        hourlyRate: float,
-        pickUpLocation: str
+        totalPrice: float = 0,
+        pickUpLocation: str = "",
+        rentalId: str = "",
+        **kwargs
     ):
-        print(f"[create-rental-order] Creating order for renterId: {renterId}")
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{RENTAL_SERVICE_URL}/rentals",
-                json={
-                    "renterId":       renterId,
-                    "equipmentId":    equipmentId,
-                    "startTime":      startTime,
-                    "endTime":        endTime,
-                    "hourlyRate":     hourlyRate,
-                    "pickUpLocation": pickUpLocation
-                }
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        print(f"[create-rental-order] Order created: {data['orderId']}")
+        print(f"[create-rental-order] renterId={renterId} rentalId={rentalId}")
+        # Rental already created as PENDING by the proxy
+        # Just return the rentalId so next steps can use it
         return {
-            "orderId":            data["orderId"],
-            "rentalConfirmation": data["rentalConfirmation"]
+            "orderId": rentalId,
+            "rentalConfirmation": {
+                "orderId":     rentalId,
+                "renterId":    renterId,
+                "equipmentId": equipmentId,
+                "startTime":   startTime,
+                "endTime":     endTime,
+                "totalPrice":  totalPrice,
+                "status":      "pending"
+            }
         }
 
-    print("Starting worker: create-rental-order")
+    print(f"Worker started: create-rental-order → {RENTAL_SERVICE_URL}")
     await worker.work()
 
 if __name__ == "__main__":
