@@ -13,7 +13,7 @@ export const AccountPage: React.FC = () => {
   const navigate = useNavigate();
   const [name, setName] = useState(user?.name || '');
   const [email, setEmail] = useState(user?.email || '');
-  const [phone, setPhone] = useState('(555) 123-4567');
+  const [phone, setPhone] = useState(user?.phone || '(555) 123-4567');
   const [address, setAddress] = useState('123 Main St, City, State 12345');
 
   const handleSave = (e: React.FormEvent) => {

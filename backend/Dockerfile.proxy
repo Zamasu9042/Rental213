@@ -1,0 +1,12 @@
+FROM node:20-alpine
+WORKDIR /app
+
+# Copy package files first for layer caching
+COPY package.json package-lock.json* ./
+RUN npm install --omit=dev
+
+# Copy the proxy entry point
+COPY camunda_proxy.js ./
+
+EXPOSE 3001
+CMD ["node", "camunda_proxy.js"]

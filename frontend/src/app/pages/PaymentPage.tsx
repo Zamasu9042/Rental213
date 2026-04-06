@@ -1,12 +1,10 @@
 /**
- * PaymentPage.tsx
- * 
- * When user confirms rental:
- * 1. Calls proxy → Camunda starts rental-workflow process
- * 2. Polls proxy every 2s waiting for stripeRedirectUrl
- * 3. Redirects user to Stripe to complete payment
- * 
- * After Stripe payment, user returns to /confirmation.
+ * PaymentPage.tsx — Scenario 1 payment flow
+ *
+ * 1. POST /api/rentals → proxy creates PENDING rental + Stripe Checkout Session + starts Camunda
+ * 2. Poll /api/rentals/:key/stripe-url every 2 s
+ * 3. Redirect to Stripe Hosted Checkout
+ * 4. On success Stripe → /confirmation?rental_id=X
  */
 
 import React, { useState } from 'react';
@@ -16,7 +14,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Button } from '../components/ui/button';
 import { ChevronLeft, Loader2, CreditCard, AlertCircle } from 'lucide-react';
 import { Equipment } from '../context/AppContext';
-import { startRentalProcess, pollStripeUrl } from "../../lib/api";;
+import { startRentalProcess, pollStripeUrl } from '../../lib/api';
 
 interface LocationState {
   equipment: Equipment;
@@ -31,7 +29,7 @@ type PageState = 'confirm' | 'starting' | 'waiting-stripe' | 'error';
 export const PaymentPage: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
-  const { user, addRental } = useApp();
+  const { user } = useApp();
   const state = location.state as LocationState;
 
   const [pageState, setPageState] = useState<PageState>('confirm');
@@ -45,54 +43,36 @@ export const PaymentPage: React.FC = () => {
 
   const { equipment, startDate, endDate, totalPrice, pickupLocation } = state;
 
-  // Calculate hourly rate from daily rate (equipment.price is per day)
-  // The BPMN expects hourlyRate, so we convert: daily / 24
-  const hourlyRate = +(equipment.price / 24).toFixed(2);
-
   const handleConfirm = async () => {
-    if (!user) {
-      navigate('/login');
-      return;
-    }
+    if (!user) { navigate('/login'); return; }
 
     setPageState('starting');
     setErrorMessage('');
 
     try {
-      // Step 1 — Start the Camunda process
+      // Step 1 — Create rental + Stripe session + start Camunda
       const { processInstanceKey } = await startRentalProcess({
         renterId:       user.id,
         equipmentId:    equipment.id,
         startTime:      startDate,
         endTime:        endDate,
-        hourlyRate,
-        pickUpLocation: pickupLocation || equipment.ownerName,
+        totalPrice,
+        pickUpLocation: pickupLocation || equipment.pickup_location || '',
       });
 
       setProcessKey(processInstanceKey);
-
-      // Also add to local state so confirmation page has the rental
-      addRental({
-        id:          `rental-${processInstanceKey}`,
-        equipmentId: equipment.id,
-        equipment,
-        startDate,
-        endDate,
-        totalPrice,
-        status:      'active',
-        pickupLocation,
-      });
-
-      // Step 2 — Poll for Stripe redirect URL
       setPageState('waiting-stripe');
+
+      // Step 2 — Poll for Stripe URL (ready immediately — proxy sets it synchronously)
       const stripeUrl = await pollStripeUrl(processInstanceKey);
 
-      // Step 3 — Redirect to Stripe
+      // Step 3 — Redirect to Stripe Hosted Checkout
       window.location.href = stripeUrl;
 
-    } catch (err: any) {
-      console.error("Payment flow error:", err);
-      setErrorMessage(err.message || 'Something went wrong. Please try again.');
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Something went wrong. Please try again.';
+      console.error('Payment flow error:', err);
+      setErrorMessage(message);
       setPageState('error');
     }
   };
@@ -117,30 +97,22 @@ export const PaymentPage: React.FC = () => {
               <CardTitle>Order Summary</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="flex gap-4">
-                <img
-                  src={equipment.images[0]}
-                  alt={equipment.name}
-                  className="w-20 h-20 object-cover rounded"
-                />
-                <div>
-                  <h3 className="font-semibold">{equipment.name}</h3>
-                  <p className="text-sm text-gray-600">{equipment.category}</p>
-                  <p className="text-sm text-gray-500">by {equipment.ownerName}</p>
-                </div>
+              <div>
+                <h3 className="font-semibold">{equipment.name}</h3>
+                <p className="text-sm text-gray-600">{equipment.category}</p>
               </div>
 
               <div className="border-t pt-4 space-y-2">
                 <div className="flex justify-between text-sm">
                   <span className="text-gray-600">Rental Period</span>
                   <span>
-                    {new Date(startDate).toLocaleDateString()} -{' '}
+                    {new Date(startDate).toLocaleDateString()} –{' '}
                     {new Date(endDate).toLocaleDateString()}
                   </span>
                 </div>
                 <div className="flex justify-between text-sm">
-                  <span className="text-gray-600">Daily Rate</span>
-                  <span>${equipment.price}/day</span>
+                  <span className="text-gray-600">Hourly Rate</span>
+                  <span>${equipment.price.toFixed(2)}/hr</span>
                 </div>
                 {pickupLocation && (
                   <div className="flex justify-between text-sm">
@@ -150,7 +122,7 @@ export const PaymentPage: React.FC = () => {
                 )}
                 <div className="flex justify-between text-lg font-semibold pt-2 border-t">
                   <span>Total</span>
-                  <span className="text-blue-600">${totalPrice}</span>
+                  <span className="text-blue-600">${totalPrice.toFixed(2)}</span>
                 </div>
               </div>
             </CardContent>
@@ -166,7 +138,6 @@ export const PaymentPage: React.FC = () => {
             </CardHeader>
             <CardContent className="space-y-6">
 
-              {/* Confirm state */}
               {pageState === 'confirm' && (
                 <>
                   <p className="text-gray-600 text-sm">
@@ -178,16 +149,15 @@ export const PaymentPage: React.FC = () => {
                     <ol className="space-y-1 list-decimal list-inside">
                       <li>Your rental order is created</li>
                       <li>You're redirected to Stripe to pay</li>
-                      <li>You receive a booking confirmation</li>
+                      <li>You receive a booking confirmation + SMS</li>
                     </ol>
                   </div>
                   <Button className="w-full" size="lg" onClick={handleConfirm}>
-                    Confirm & Pay ${totalPrice}
+                    Confirm &amp; Pay ${totalPrice.toFixed(2)}
                   </Button>
                 </>
               )}
 
-              {/* Starting Camunda process */}
               {pageState === 'starting' && (
                 <div className="text-center py-8">
                   <Loader2 className="w-10 h-10 animate-spin text-blue-600 mx-auto mb-4" />
@@ -196,14 +166,11 @@ export const PaymentPage: React.FC = () => {
                 </div>
               )}
 
-              {/* Waiting for Stripe URL */}
               {pageState === 'waiting-stripe' && (
                 <div className="text-center py-8">
                   <Loader2 className="w-10 h-10 animate-spin text-blue-600 mx-auto mb-4" />
                   <p className="font-semibold">Preparing your payment...</p>
-                  <p className="text-sm text-gray-500 mt-2">
-                    Redirecting you to Stripe shortly
-                  </p>
+                  <p className="text-sm text-gray-500 mt-2">Redirecting you to Stripe shortly</p>
                   {processKey && (
                     <p className="text-xs text-gray-400 mt-4 font-mono">
                       Order ref: {processKey}
@@ -212,7 +179,6 @@ export const PaymentPage: React.FC = () => {
                 </div>
               )}
 
-              {/* Error state */}
               {pageState === 'error' && (
                 <div className="space-y-4">
                   <div className="bg-red-50 border border-red-200 rounded-lg p-4 flex gap-3">
@@ -222,11 +188,7 @@ export const PaymentPage: React.FC = () => {
                       <p className="text-sm text-red-700 mt-1">{errorMessage}</p>
                     </div>
                   </div>
-                  <Button
-                    className="w-full"
-                    variant="outline"
-                    onClick={() => setPageState('confirm')}
-                  >
+                  <Button className="w-full" variant="outline" onClick={() => setPageState('confirm')}>
                     Try Again
                   </Button>
                 </div>

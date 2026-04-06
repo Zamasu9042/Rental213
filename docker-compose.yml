@@ -1,0 +1,20 @@
+# ─── docker-compose.yml (ROOT ORCHESTRATOR) ───────────────────────────────────
+#
+# Startup order:   infra  →  backend  →  frontend
+#
+# Usage:
+#   docker compose up --build          # build + start everything
+#   docker compose up --build -d       # detached (background)
+#   docker compose down -v             # stop + wipe volumes
+#   docker compose logs -f frontend    # tail a single service
+#
+# Selective layer startup:
+#   docker compose up infra            # infra only
+#   docker compose up backend          # infra + backend (respects depends_on)
+#
+# ──────────────────────────────────────────────────────────────────────────────
+
+include:
+  - path: infra/docker-compose.infra.yml
+  - path: backend/docker-compose.backend.yml
+  - path: frontend/docker-compose.frontend.yml

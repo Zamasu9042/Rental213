@@ -1,8 +1,0 @@
-fastapi
-uvicorn[standard]
-python-dotenv
-sqlalchemy
-pymysql
-cryptography
-httpx
-python-multipart

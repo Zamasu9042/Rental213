@@ -1,0 +1,185 @@
+# ─── docker-compose.infra.yml ─────────────────────────────────────────────────
+# Starts first. Everything here must be healthy before backend services launch.
+# Run standalone:  docker compose -f infra/docker-compose.infra.yml up
+
+networks:
+  esd-net:
+    driver: bridge
+    name: esd-net
+
+volumes:
+  equipment_mysql_data:  { name: esd_equipment_mysql_data }
+  rental_mysql_data:     { name: esd_rental_mysql_data }
+  reputation_mysql_data: { name: esd_reputation_mysql_data }
+  account_mysql_data:    { name: esd_account_mysql_data }
+  damage_mysql_data:     { name: esd_damage_mysql_data }
+  rabbitmq_data:         { name: esd_rabbitmq_data }
+
+services:
+
+  # ── Databases ──────────────────────────────────────────────────────────────
+
+  equipment-db:
+    image: mysql:8.0
+    hostname: equipment-db
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: equipment_db
+      MYSQL_USER: equipment
+      MYSQL_PASSWORD: equipment_pass
+      MYSQL_ROOT_PASSWORD: root_equipment
+    volumes:
+      - equipment_mysql_data:/var/lib/mysql
+      - ../backend/equipment-service/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ../backend/equipment-service/seed-data.sql:/docker-entrypoint-initdb.d/02-seed-data.sql:ro
+    ports:
+      - "3307:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot_equipment"]
+      interval: 5s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+    networks: [esd-net]
+
+  rental-db:
+    image: mysql:8.0
+    hostname: rental-db
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: rental_db
+      MYSQL_USER: rental
+      MYSQL_PASSWORD: rental_pass
+      MYSQL_ROOT_PASSWORD: root_rental
+    volumes:
+      - rental_mysql_data:/var/lib/mysql
+      - ../backend/rental-service/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    ports:
+      - "3308:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot_rental"]
+      interval: 5s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+    networks: [esd-net]
+
+  account-db:
+    image: mysql:8.0
+    hostname: account-db
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: account_db
+      MYSQL_USER: account
+      MYSQL_PASSWORD: account_pass
+      MYSQL_ROOT_PASSWORD: root_account
+    volumes:
+      - account_mysql_data:/var/lib/mysql
+      - ../backend/account-service/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    ports:
+      - "3310:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot_account"]
+      interval: 5s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+    networks: [esd-net]
+
+  reputation-db:
+    image: mysql:8.0
+    hostname: reputation-db
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: reputation_db
+      MYSQL_USER: reputation
+      MYSQL_PASSWORD: reputation_pass
+      MYSQL_ROOT_PASSWORD: root_reputation
+    volumes:
+      - reputation_mysql_data:/var/lib/mysql
+      - ../backend/reputation-microservice/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    ports:
+      - "3309:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot_reputation"]
+      interval: 5s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+    networks: [esd-net]
+
+  damage-db:
+    image: mysql:8.0
+    hostname: damage-db
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: damage_claims_db
+      MYSQL_USER: damage
+      MYSQL_PASSWORD: damage_pass
+      MYSQL_ROOT_PASSWORD: root_damage
+    volumes:
+      - damage_mysql_data:/var/lib/mysql
+      - ../backend/damage-claim-service/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    ports:
+      - "3311:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot_damage"]
+      interval: 5s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+    networks: [esd-net]
+
+  # ── Message broker ─────────────────────────────────────────────────────────
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    hostname: esd-rabbit
+    restart: unless-stopped
+    ports:
+      - "5672:5672"
+      - "15672:15672"    # management UI at http://localhost:15672 (guest/guest)
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks: [esd-net]
+
+  # ── AMQP exchange + queue initialiser (runs once then exits) ───────────────
+
+  amqp-setup:
+    build:
+      context: ./amqp-setup
+      dockerfile: Dockerfile
+    environment:
+      AMQP_HOST: rabbitmq
+      AMQP_PORT: "5672"
+      AMQP_EXCHANGE: rental_topic
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: on-failure
+    networks: [esd-net]
+
+  # ── Kong API Gateway ────────────────────────────────────────────────────────
+
+  kong:
+    image: kong:3.7
+    restart: unless-stopped
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /kong/declarative/kong.yml
+      KONG_PROXY_LISTEN: "0.0.0.0:8000"
+      KONG_ADMIN_LISTEN: "127.0.0.1:8001"
+      KONG_LOG_LEVEL: warn
+    ports:
+      - "8000:8000"   # only external-facing port (besides frontend :3000)
+    volumes:
+      - ./kong.yml:/kong/declarative/kong.yml:ro
+    depends_on:
+      amqp-setup:
+        condition: service_completed_successfully
+    networks: [esd-net]

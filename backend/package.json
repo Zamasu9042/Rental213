@@ -9,7 +9,9 @@
     "smoke": "node scripts/smoke-test.mjs"
   },
   "dependencies": {
+    "bcrypt": "^6.0.0",
     "cors": "^2.8.5",
-    "express": "^4.21.1"
+    "express": "^4.21.1",
+    "stripe": "^16.12.0"
   }
 }

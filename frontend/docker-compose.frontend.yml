@@ -1,0 +1,25 @@
+# ─── docker-compose.frontend.yml ──────────────────────────────────────────────
+# Starts last. Vite dev server proxies /api and /webhook → Kong :8000.
+# Run standalone (once infra + backend are up):
+#   docker compose -f frontend/docker-compose.frontend.yml up
+
+networks:
+  esd-net:
+    external: true
+
+services:
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      # Switch to false to use live microservices instead of mock data
+      VITE_USE_MOCKS: ${VITE_USE_MOCKS:-false}
+      VITE_CHECKOUT_MODE: ${VITE_CHECKOUT_MODE:-pending_payment}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - camunda-proxy   # wait for the proxy that handles /api/rentals
+    networks: [esd-net]
