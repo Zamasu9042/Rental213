@@ -24,6 +24,13 @@ button {
   cursor: pointer;
 }
 
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 code {
   background: #eef3fb;
   border-radius: 6px;
@@ -159,6 +166,7 @@ code {
 
 .badge-rented,
 .badge-pending,
+.badge-pendingpayment,
 .badge-confirmed {
   background: #fff2d6;
   color: #8a5a00;
@@ -168,6 +176,16 @@ code {
 .badge-unavailable {
   background: #fde4e4;
   color: #8f1d1d;
+}
+
+.badge-late {
+  background: #ffe8e8;
+  color: #a32020;
+}
+
+.badge-completed {
+  background: #e8eef7;
+  color: #2c5282;
 }
 
 .meta-list,

@@ -11,8 +11,10 @@ import {
   submitDamageClaim
 } from "./api";
 
+const useMocks = import.meta.env.VITE_USE_MOCKS !== "false";
+
 const initialRentalForm = {
-  renterId: "demo-renter-001",
+  renterId: useMocks ? "demo-renter-001" : "1001",
   equipmentId: "",
   startTime: "",
   endTime: ""
@@ -21,7 +23,9 @@ const initialRentalForm = {
 const initialClaimForm = {
   rentalId: "",
   damageType: "",
-  notes: ""
+  notes: "",
+  photoFile: null,
+  autoAnalyze: true
 };
 
 function toLocalDateTimeInput(isoValue) {
@@ -58,9 +62,10 @@ export default function App() {
   async function refreshAll() {
     setLoading(true);
     try {
+      const renterKey = rentalForm.renterId || initialRentalForm.renterId;
       const [equipmentData, rentalsData, claimsData, assumptionsData] = await Promise.all([
         getEquipment(),
-        listRentals(),
+        listRentals(renterKey),
         listClaims(),
         getAssumptions()
       ]);
@@ -88,7 +93,9 @@ export default function App() {
       setRentalForm(initialRentalForm);
       await refreshAll();
       setMessage(
-        `Rental ${rental.id} confirmed via workflow ${rental.workflowId}. Owner contact: ${rental.ownerName} ${rental.ownerPhone}`
+        config.microserviceMode
+          ? `Rental ${rental.id} created (${rental.status}). Owner: ${rental.ownerName} · ${rental.ownerPhone}`
+          : `Rental ${rental.id} confirmed via workflow ${rental.workflowId}. Owner contact: ${rental.ownerName} ${rental.ownerPhone}`
       );
     } catch (error) {
       setMessage(error.message || "Could not create rental.");
@@ -125,16 +132,26 @@ export default function App() {
     }
   }
 
+  const canInspect = config.useMocks;
+
   async function handleSubmitClaim(event) {
     event.preventDefault();
     setBusy(true);
     setMessage("Submitting damage claim...");
     try {
-      const claim = await submitDamageClaim(claimForm);
+      const claim = await submitDamageClaim({
+        rentalId: claimForm.rentalId,
+        damageType: claimForm.damageType,
+        notes: claimForm.notes,
+        photoFile: claimForm.photoFile || undefined,
+        autoAnalyze: claimForm.autoAnalyze
+      });
       setClaimForm(initialClaimForm);
       await refreshAll();
       setMessage(
-        `Claim ${claim.id} verified with estimate $${claim.estimateAmount}. Equipment marked under repair.`
+        claim.estimateAmount != null
+          ? `Claim ${claim.id} — estimate $${claim.estimateAmount}.`
+          : `Claim ${claim.id} submitted (${claim.status}).`
       );
     } catch (error) {
       setMessage(error.message || "Could not submit damage claim.");
@@ -166,9 +183,9 @@ export default function App() {
           <p className="eyebrow">P2P Rental Platform</p>
           <h1>Reference UI with the three fixes implemented</h1>
           <p className="subtext">
-            This frontend works in mock mode and also connects to the included backend
-            reference API. Use renter <code>blocked-renter-001</code> to test unpaid-fee
-            blocking, or load the reserved drill slot to test overlap protection.
+            Mock mode uses in-browser data. With <code>VITE_USE_MOCKS=false</code>, the UI
+            talks to your Docker microservices through the Vite proxy (<code>/services/*</code>
+            → ports 8001, 8002, 8004, 8006). Start compose first, then <code>npm run dev</code>.
           </p>
         </div>
         <div className="config-card">
@@ -179,8 +196,12 @@ export default function App() {
               <dd>{String(config.useMocks)}</dd>
             </div>
             <div>
-              <dt>API base URL</dt>
+              <dt>API / proxy</dt>
               <dd>{config.apiBaseUrl}</dd>
+            </div>
+            <div>
+              <dt>Microservices</dt>
+              <dd>{String(config.microserviceMode)}</dd>
             </div>
           </dl>
         </div>
@@ -203,12 +224,21 @@ export default function App() {
         <section className="panel">
           <h2>Quick demo checklist</h2>
           <ul className="text-list">
-            <li>Create a normal rental with <code>eq-1001</code>.</li>
             <li>
-              Click <strong>Load first reserved slot</strong> on the drill to trigger the
-              overlap check.
+              {config.microserviceMode
+                ? "Use renter 1001 or 1002 and numeric equipment ids from the catalog."
+                : "Create a normal rental with eq-1001."}
             </li>
-            <li>Use renter <code>blocked-renter-001</code> to trigger unpaid-fee blocking.</li>
+            <li>
+              Click <strong>Load first reserved slot</strong> when reserved windows exist to
+              test overlap protection.
+            </li>
+            {!config.microserviceMode ? (
+              <li>
+                Use renter <code>blocked-renter-001</code> to trigger unpaid-fee blocking (mock
+                only).
+              </li>
+            ) : null}
           </ul>
         </section>
 
@@ -231,7 +261,9 @@ export default function App() {
                       <h3>{item.name}</h3>
                       <p className="muted">{item.category}</p>
                     </div>
-                    <span className={`badge badge-${item.status.toLowerCase()}`}>
+                    <span
+                      className={`badge badge-${item.status.toLowerCase().replace(/\s+/g, "")}`}
+                    >
                       {item.status}
                     </span>
                   </div>
@@ -260,7 +292,9 @@ export default function App() {
 
                   <div className="button-row">
                     <button
-                      disabled={item.status !== "Available" || busy}
+                      disabled={
+                        busy || String(item.status).toLowerCase() !== "available"
+                      }
                       onClick={() =>
                         setRentalForm((current) => ({ ...current, equipmentId: item.id }))
                       }
@@ -348,8 +382,8 @@ export default function App() {
                     <th>Equipment</th>
                     <th>Window</th>
                     <th>Status</th>
-                    <th>Payment</th>
-                    <th>Workflow</th>
+                    {!config.microserviceMode ? <th>Payment</th> : null}
+                    {!config.microserviceMode ? <th>Workflow</th> : null}
                     <th>Owner contact</th>
                     <th>Actions</th>
                   </tr>
@@ -361,8 +395,10 @@ export default function App() {
                       <td>{rental.equipmentId}</td>
                       <td>{formatDateRange(rental.startTime, rental.endTime)}</td>
                       <td>{rental.status}</td>
-                      <td>{rental.paymentStatus}</td>
-                      <td className="mono">{rental.workflowId || "-"}</td>
+                      {!config.microserviceMode ? <td>{rental.paymentStatus}</td> : null}
+                      {!config.microserviceMode ? (
+                        <td className="mono">{rental.workflowId || "-"}</td>
+                      ) : null}
                       <td>
                         {rental.ownerName}
                         <br />
@@ -370,17 +406,28 @@ export default function App() {
                       </td>
                       <td className="actions">
                         <button
-                          disabled={busy || rental.status === "Completed"}
+                          disabled={
+                            busy ||
+                            rental.status === "Completed" ||
+                            rental.status === "PendingPayment" ||
+                            (config.microserviceMode
+                              ? rental.status !== "Active"
+                              : !["Active", "Confirmed", "InUse", "ReturnRequested"].includes(
+                                  rental.status
+                                ))
+                          }
                           onClick={() => handleRequestReturn(rental.id)}
                         >
-                          Request return
+                          {config.microserviceMode ? "Return item" : "Request return"}
                         </button>
-                        <button
-                          disabled={busy || rental.status !== "PendingInspection"}
-                          onClick={() => handleApproveReturn(rental.id)}
-                        >
-                          Approve no-damage return
-                        </button>
+                        {canInspect ? (
+                          <button
+                            disabled={busy || rental.status !== "PendingInspection"}
+                            onClick={() => handleApproveReturn(rental.id)}
+                          >
+                            Approve no-damage return
+                          </button>
+                        ) : null}
                         <button
                           disabled={busy}
                           onClick={() =>
@@ -432,6 +479,36 @@ export default function App() {
                 rows="4"
               />
             </label>
+            {config.microserviceMode ? (
+              <label>
+                Photo (optional — enables Vision analyze)
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(event) =>
+                    setClaimForm((current) => ({
+                      ...current,
+                      photoFile: event.target.files?.[0] || null
+                    }))
+                  }
+                />
+              </label>
+            ) : null}
+            {config.microserviceMode ? (
+              <label className="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={claimForm.autoAnalyze}
+                  onChange={(event) =>
+                    setClaimForm((current) => ({
+                      ...current,
+                      autoAnalyze: event.target.checked
+                    }))
+                  }
+                />
+                Run analyze after photo upload
+              </label>
+            ) : null}
             <button type="submit" disabled={busy}>
               Submit claim
             </button>
@@ -451,7 +528,10 @@ export default function App() {
                   <span>
                     {claim.status} / severity {claim.severity} / confidence {claim.confidence}
                   </span>
-                  <span>Estimate: ${claim.estimateAmount}</span>
+                  <span>
+                    Estimate:{" "}
+                    {claim.estimateAmount != null ? `$${claim.estimateAmount}` : "—"}
+                  </span>
                 </li>
               ))}
             </ul>
