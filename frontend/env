@@ -1,0 +1,8 @@
+# Frontend .env
+# Place this file in your frontend/ folder (same level as package.json)
+
+# Set to false to use the real Flask backend
+VITE_USE_MOCKS=false
+
+# Your Flask proxy running locally
+VITE_API_BASE_URL=http://localhost:8000

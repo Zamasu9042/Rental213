@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, ReactNode } from 'react';
+import { loginUser } from '../../lib/api';
 
 export interface Equipment {
   id: string;
@@ -11,6 +12,7 @@ export interface Equipment {
   ownerId: string;
   ownerName: string;
   available: boolean;
+  pickup_location?: string;
 }
 
 export interface Rental {
@@ -62,7 +64,7 @@ export interface DamageClaim {
 
 interface AppContextType {
   user: User | null;
-  login: (email: string, password: string) => void;
+  login: (email: string, password: string) => Promise<void>;
   logout: () => void;
   rentals: Rental[];
   addRental: (rental: Rental) => void;
@@ -81,29 +83,6 @@ interface AppContextType {
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
-const DEMO_CAMERA: Equipment = {
-  id: 'my-1',
-  name: 'Professional DSLR Camera',
-  description: 'Canon EOS 5D Mark IV with 24-70mm lens',
-  category: 'Cameras',
-  price: 75,
-  condition: 'Excellent',
-  images: ['https://images.unsplash.com/photo-1502920917128-1aa500764cbd?w=800'],
-  ownerId: 'user-1',
-  ownerName: 'John Doe',
-  available: false,
-};
-
-const DEMO_RENTAL: Rental = {
-  id: 'rental-demo',
-  equipmentId: 'my-1',
-  equipment: DEMO_CAMERA,
-  startDate: '2026-03-20T00:00:00.000Z',
-  endDate: '2026-03-24T00:00:00.000Z',
-  totalPrice: 300,
-  status: 'active',
-  pickupLocation: 'SMU School of Computing, Level 3',
-};
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
@@ -112,29 +91,16 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [reviews, setReviews] = useState<Review[]>([]);
   const [myListings, setMyListings] = useState<Equipment[]>([]);
 
-  const login = (email: string, password: string) => {
+  const login = async (email: string, password: string): Promise<void> => {
+    const account = await loginUser(email, password);
     setUser({
-      id: 'user-1',
-      name: 'John Doe',
-      email,
+      id: account.id,
+      name: account.name,
+      email: account.email,
       hasUnpaidFees: false,
     });
-    setMyListings([
-      DEMO_CAMERA,
-      {
-        id: 'my-2',
-        name: 'Camping Tent (4-Person)',
-        description: 'Spacious 4-person tent with rainfly',
-        category: 'Camping Gear',
-        price: 40,
-        condition: 'Good',
-        images: ['https://images.unsplash.com/photo-1478131143081-80f7f84ca84d?w=800'],
-        ownerId: 'user-1',
-        ownerName: 'John Doe',
-        available: true,
-      },
-    ]);
-    setRentals([DEMO_RENTAL]);
+    setRentals([]);
+    setMyListings([]);
   };
 
   const logout = () => {

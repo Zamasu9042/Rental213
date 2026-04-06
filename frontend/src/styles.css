@@ -1,0 +1,300 @@
+:root {
+  font-family: Arial, Helvetica, sans-serif;
+  line-height: 1.5;
+  color: #13213a;
+  background: #f5f7fb;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+button,
+input,
+textarea,
+code {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+code {
+  background: #eef3fb;
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+
+.page {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 24px;
+  align-items: start;
+  margin-bottom: 20px;
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 12px;
+  color: #5f6f91;
+}
+
+.hero h1 {
+  margin: 0 0 12px;
+  font-size: 36px;
+  line-height: 1.1;
+}
+
+.subtext {
+  margin: 0;
+  color: #49556f;
+}
+
+.config-card,
+.panel {
+  background: white;
+  border: 1px solid #d9e0ef;
+  border-radius: 16px;
+  padding: 18px;
+  box-shadow: 0 8px 24px rgba(10, 25, 60, 0.06);
+}
+
+.config-card dl {
+  margin: 0;
+}
+
+.config-card div + div {
+  margin-top: 12px;
+}
+
+.config-card dt {
+  font-weight: 700;
+}
+
+.config-card dd {
+  margin: 4px 0 0;
+  color: #49556f;
+  word-break: break-word;
+}
+
+.status-bar {
+  background: #edf3ff;
+  border: 1px solid #cfe0ff;
+  color: #1e3261;
+  border-radius: 12px;
+  padding: 12px 16px;
+  margin-bottom: 20px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+}
+
+.panel-wide {
+  grid-column: span 2;
+}
+
+.panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.card {
+  border: 1px solid #dbe3f3;
+  border-radius: 14px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.card-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: start;
+}
+
+.muted {
+  color: #62708c;
+  margin: 4px 0 0;
+}
+
+.badge {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.badge-available {
+  background: #e7f7ed;
+  color: #19663a;
+}
+
+.badge-rented,
+.badge-pending,
+.badge-pendingpayment,
+.badge-confirmed {
+  background: #fff2d6;
+  color: #8a5a00;
+}
+
+.badge-underrepair,
+.badge-unavailable {
+  background: #fde4e4;
+  color: #8f1d1d;
+}
+
+.badge-late {
+  background: #ffe8e8;
+  color: #a32020;
+}
+
+.badge-completed {
+  background: #e8eef7;
+  color: #2c5282;
+}
+
+.meta-list,
+.text-list,
+.reservation-list {
+  margin: 0;
+  padding-left: 18px;
+  color: #42506c;
+}
+
+.form {
+  display: grid;
+  gap: 12px;
+}
+
+.form label {
+  display: grid;
+  gap: 6px;
+  font-weight: 700;
+}
+
+.form input,
+.form textarea,
+button {
+  border-radius: 10px;
+  border: 1px solid #cbd5e7;
+  padding: 10px 12px;
+  background: white;
+}
+
+button:hover {
+  background: #f7f9fd;
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.hint {
+  margin: 0;
+  color: #5b6985;
+  font-size: 14px;
+}
+
+.hint-box {
+  border: 1px solid #d7e4ff;
+  background: #f7faff;
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 12px 10px;
+  border-bottom: 1px solid #e4eaf6;
+  vertical-align: top;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mono {
+  font-family: Consolas, Monaco, monospace;
+  font-size: 13px;
+}
+
+.claim-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.claim-list li {
+  border: 1px solid #dbe3f3;
+  border-radius: 12px;
+  padding: 12px;
+  display: grid;
+  gap: 4px;
+}
+
+@media (max-width: 900px) {
+  .hero,
+  .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .panel-wide {
+    grid-column: span 1;
+  }
+}

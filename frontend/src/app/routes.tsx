@@ -46,6 +46,10 @@ export const router = createBrowserRouter([
         element: <ConfirmationPage />,
       },
       {
+        path: 'my-rentals',
+        element: <ConfirmationPage />,
+      },
+      {
         path: 'account',
         element: <AccountPage />,
       },
