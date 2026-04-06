@@ -42,6 +42,15 @@ export const ConfirmationPage: React.FC = () => {
   const [rentals, setRentals] = useState<RentalDisplay[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [countdown, setCountdown] = useState(5);
+
+  // After a successful payment, count down then redirect to the home page
+  useEffect(() => {
+    if (!isPostPayment || loading) return;
+    if (countdown <= 0) { navigate('/'); return; }
+    const t = setTimeout(() => setCountdown((c) => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [isPostPayment, loading, countdown, navigate]);
 
   useEffect(() => {
     const load = async () => {
@@ -106,11 +115,15 @@ export const ConfirmationPage: React.FC = () => {
             <h1 className="text-3xl mb-2">
               {isMock ? 'Booking Created!' : 'Payment Successful!'}
             </h1>
-            <p className="text-gray-600">
+            <p className="text-gray-600 mb-4">
               {isMock
                 ? 'Your rental has been created (mock mode — Stripe not configured).'
                 : 'Your rental has been confirmed. A confirmation SMS will be sent shortly.'}
             </p>
+            <p className="text-sm text-gray-400 mb-4">
+              Redirecting to home in {countdown}s…
+            </p>
+            <Button onClick={() => navigate('/')}>Go to Home now</Button>
           </div>
         )}
 
