@@ -1,0 +1,121 @@
+_format_version: "3.0"
+_transform: true
+
+# ─── Global CORS plugin ───────────────────────────────────────────────────────
+plugins:
+  - name: cors
+    config:
+      origins:
+        - "http://localhost:5173"
+        - "http://localhost:3000"
+      methods:
+        - GET
+        - POST
+        - PUT
+        - DELETE
+        - OPTIONS
+        - PATCH
+      headers:
+        - Content-Type
+        - Authorization
+        - stripe-signature
+      exposed_headers:
+        - Content-Type
+      credentials: true
+      max_age: 3600
+
+# ─── Services & Routes ────────────────────────────────────────────────────────
+services:
+
+  # Equipment Service — CRUD + image upload
+  - name: equipment-svc
+    url: http://equipment-service:8000/equipment
+    connect_timeout: 10000
+    read_timeout: 30000
+    routes:
+      - name: equipment-route
+        paths:
+          - /api/equipment
+        strip_path: true
+        methods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
+
+  # Equipment static images — GET /api/equipment-images/...
+  - name: equipment-images-svc
+    url: http://equipment-service:8000/images
+    connect_timeout: 10000
+    read_timeout: 30000
+    routes:
+      - name: equipment-images-route
+        paths:
+          - /api/equipment-images
+        strip_path: true
+        methods:
+          - GET
+          - OPTIONS
+
+  # Rental Service — GET /api/rental/renter/:id/dashboard, GET /api/rental/:id
+  # strip_path strips "/api/rental" prefix; service URL adds "/rental" back
+  - name: rental-svc
+    url: http://rental-service:8000/rental
+    connect_timeout: 10000
+    read_timeout: 30000
+    routes:
+      - name: rental-read-route
+        paths:
+          - /api/rental
+        strip_path: true
+        methods:
+          - GET
+          - PUT
+          - POST
+          - OPTIONS
+
+  # Camunda Proxy — POST /api/rentals, GET /api/rentals/:key/stripe-url
+  # No strip — proxy has /api/rentals routes defined
+  - name: camunda-proxy-rentals
+    url: http://camunda-proxy:3001
+    connect_timeout: 10000
+    read_timeout: 60000
+    routes:
+      - name: camunda-rentals-route
+        paths:
+          - /api/rentals
+        strip_path: false
+        methods:
+          - GET
+          - POST
+          - OPTIONS
+
+  # Account Service — POST /api/account/login, GET /api/account/:id
+  - name: account-svc
+    url: http://account-service:8000/account
+    connect_timeout: 10000
+    read_timeout: 15000
+    routes:
+      - name: account-route
+        paths:
+          - /api/account
+        strip_path: true
+        methods:
+          - GET
+          - POST
+          - OPTIONS
+
+  # Stripe Webhook — POST /webhook/stripe
+  - name: camunda-proxy-webhook
+    url: http://camunda-proxy:3001
+    connect_timeout: 10000
+    read_timeout: 30000
+    routes:
+      - name: webhook-route
+        paths:
+          - /webhook
+        strip_path: false
+        methods:
+          - POST
+          - OPTIONS
