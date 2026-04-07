@@ -107,6 +107,12 @@ export async function getEquipment() {
   return items.map(mapEquipment);
 }
 
+/** Fetch ALL equipment regardless of status (for owner views — includes rented/under_repair) */
+export async function getAllEquipment() {
+  const items = await request<ApiEquipment[]>("/api/equipment?include_all=true");
+  return items.map(mapEquipment);
+}
+
 /** Fetch a single piece of equipment by ID */
 export async function getEquipmentById(id: string | number) {
   const item = await request<ApiEquipment>(`/api/equipment/${id}`);

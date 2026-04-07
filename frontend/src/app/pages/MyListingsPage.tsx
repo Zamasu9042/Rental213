@@ -5,7 +5,7 @@ import { Card, CardContent } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Package, Loader2, AlertTriangle, Calendar, MapPin, AlertCircle, CheckCircle, Clock, XCircle } from 'lucide-react';
-import { getEquipment, getRentalsForEquipment, getDamageClaimByRental, ApiRental, ApiDamageClaim } from '../../lib/api';
+import { getAllEquipment, getRentalsForEquipment, getDamageClaimByRental, ApiRental, ApiDamageClaim } from '../../lib/api';
 import { Equipment } from '../context/AppContext';
 import { RENTAL_STATUS_BADGE } from '../../lib/rentalStatusBadges';
 
@@ -37,7 +37,7 @@ export const MyListingsPage: React.FC = () => {
     if (!user) return;
     setLoading(true);
 
-    getEquipment()
+    getAllEquipment()
       .then(async all => {
         const owned = all.filter(e => e.ownerId === user.id);
         setEquipment(owned);

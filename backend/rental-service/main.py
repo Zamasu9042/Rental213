@@ -228,6 +228,18 @@ def create_rental(payload: RentalCreate, db: Session = Depends(get_db)):
     if status_val != "available":
         raise HTTPException(status_code=409, detail="Equipment is not available")
 
+    blocking_rental = (
+        db.query(Rental)
+        .filter(Rental.renter_id == payload.renter_id)
+        .filter(Rental.status.in_(BLOCKING_RENTAL_STATUSES))
+        .first()
+    )
+    if blocking_rental:
+        raise HTTPException(
+            status_code=409,
+            detail=f"You have an outstanding {blocking_rental.status.lower()} payment (rental #{blocking_rental.id}). Please resolve it before renting again.",
+        )
+
     if _overlapping_booking_exists(
         db, payload.equipment_id, payload.start_time, payload.end_time
     ):
