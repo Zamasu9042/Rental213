@@ -180,6 +180,30 @@ export async function confirmReview(rentalId: number, accountId: number): Promis
   });
 }
 
+export interface StripeSessionResponse {
+  stripeRedirectUrl: string;
+}
+
+/** Create a fresh Stripe session for a PENDING rental whose payment was lost */
+export async function retryPayment(rentalId: number): Promise<StripeSessionResponse> {
+  return request<StripeSessionResponse>("/api/retry-payment", {
+    method: "POST",
+    body: JSON.stringify({ rentalId }),
+  });
+}
+
+/** Create a Stripe session to pay a late fee on a returned/late rental */
+export async function startLateFeePayment(payload: {
+  rentalId: number;
+  renterId: number;
+  feeAmount: number;
+}): Promise<StripeSessionResponse> {
+  return request<StripeSessionResponse>("/api/late-payment", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 // ─── Payment (payment-service via Kong — report / technical diagram) ─────────
 
 export interface ApiPayment {

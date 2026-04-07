@@ -24,7 +24,7 @@ import {
 import {
   getRental, getRenterDashboard, getEquipmentById, getRentalsForEquipment,
   getEquipment, getAllEquipment, markCollected, confirmReturn,
-  getAccount, getDamageClaimByRental,
+  getAccount, getDamageClaimByRental, retryPayment, startLateFeePayment,
   ApiRental, ApiDamageClaim,
 } from '../../lib/api';
 import { RENTAL_STATUS_BADGE } from '../../lib/rentalStatusBadges';
@@ -219,6 +219,36 @@ export const ConfirmationPage: React.FC = () => {
     }
   };
 
+  const handleRetryPayment = async (rentalId: number) => {
+    setActioning(prev => new Set(prev).add(rentalId));
+    try {
+      const { stripeRedirectUrl } = await retryPayment(rentalId);
+      window.location.href = stripeRedirectUrl;
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Payment failed');
+      setActioning(prev => { const s = new Set(prev); s.delete(rentalId); return s; });
+    }
+  };
+
+  const handlePayLateFee = async (rental: RentalDisplay) => {
+    setActioning(prev => new Set(prev).add(rental.id));
+    try {
+      const now = new Date();
+      const end = new Date(rental.end_time);
+      const hoursLate = Math.max((now.getTime() - end.getTime()) / 3_600_000, 0);
+      const feeAmount = Math.ceil(hoursLate) * (rental.hourly_rate || 0);
+      const { stripeRedirectUrl } = await startLateFeePayment({
+        rentalId: rental.id,
+        renterId: rental.renter_id,
+        feeAmount: feeAmount > 0 ? feeAmount : rental.hourly_rate,
+      });
+      window.location.href = stripeRedirectUrl;
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Payment failed');
+      setActioning(prev => { const s = new Set(prev); s.delete(rental.id); return s; });
+    }
+  };
+
   // ── Post-payment single rental view ────────────────────────────────────────
 
   if (isPostPayment && rentalIdParam) {
@@ -350,6 +380,8 @@ export const ConfirmationPage: React.FC = () => {
                 existingClaim={topTab === 'rented-out' ? (claimsByRental[rental.id] ?? null) : undefined}
                 onCollect={() => runAction(rental.id, () => markCollected(rental.id, Number(user!.id)))}
                 onConfirmReturn={() => runAction(rental.id, () => confirmReturn(rental.id, Number(user!.id)))}
+                onRetryPayment={() => handleRetryPayment(rental.id)}
+                onPayLateFee={() => handlePayLateFee(rental)}
                 onOpenReview={() => setReviewRental(rental)}
                 onFileClaim={() => navigate(`/damage-claim/${rental.id}`, {
                   state: {
@@ -401,6 +433,8 @@ interface RentalCardProps {
   existingClaim?: ApiDamageClaim | null;
   onCollect: () => void;
   onConfirmReturn: () => void;
+  onRetryPayment: () => void;
+  onPayLateFee: () => void;
   onOpenReview: () => void;
   onFileClaim: () => void;
   onViewClaim: () => void;
@@ -410,7 +444,7 @@ interface RentalCardProps {
 const RentalCard: React.FC<RentalCardProps> = ({
   rental, userId, isOwnerView, isActioning,
   existingClaim,
-  onCollect, onConfirmReturn, onOpenReview, onFileClaim, onViewClaim, onNavigate,
+  onCollect, onConfirmReturn, onRetryPayment, onPayLateFee, onOpenReview, onFileClaim, onViewClaim, onNavigate,
 }) => {
   const badge = STATUS_BADGE[rental.status] ?? { variant: 'outline' as const, label: rental.status };
   const isRenter = String(rental.renter_id) === userId;
@@ -544,10 +578,17 @@ const RentalCard: React.FC<RentalCardProps> = ({
               </Button>
             )}
 
+            {/* ── PENDING ── */}
+            {rental.status === 'PENDING' && isRenter && (
+              <Button size="sm" variant="outline" className="gap-1 h-8 text-xs border-amber-300 text-amber-700 hover:bg-amber-50" onClick={onRetryPayment} disabled={isActioning}>
+                {isActioning ? <Loader2 className="w-3 h-3 animate-spin" /> : <CreditCard className="w-3 h-3" />} Complete payment
+              </Button>
+            )}
+
             {/* ── LATE ── */}
             {rental.status === 'LATE' && isRenter && (
-              <Button size="sm" variant="destructive" className="gap-1 h-8 text-xs" onClick={() => onNavigate(`/equipment/${rental.equipment_id}`)}>
-                <CreditCard className="w-3 h-3" /> Pay late fee
+              <Button size="sm" variant="destructive" className="gap-1 h-8 text-xs" onClick={onPayLateFee} disabled={isActioning}>
+                {isActioning ? <Loader2 className="w-3 h-3 animate-spin" /> : <CreditCard className="w-3 h-3" />} Pay late fee
               </Button>
             )}
           </div>

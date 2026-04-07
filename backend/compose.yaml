@@ -505,6 +505,40 @@ services:
     networks:
       - esd-net
 
+  workers:
+    build:
+      context: ./workers
+      dockerfile: Dockerfile.workers
+    restart: unless-stopped
+    environment:
+      CAMUNDA_CLIENT_ID: ${CAMUNDA_CLIENT_ID:-AQazmsVXl7idqPlY1pMGm~Zh7Gv3Lgxk}
+      CAMUNDA_CLIENT_SECRET: ${CAMUNDA_CLIENT_SECRET:-uH0.fzO7HfUxQ0FTlEe0DsBRe-WVgbxIq_BD0H8rpw422I.1Ig.jGZ~9JVZiU0R8}
+      CAMUNDA_CLUSTER_ID: ${CAMUNDA_CLUSTER_ID:-db920878-5333-4352-b103-0803eb907686}
+      CAMUNDA_REGION: ${CAMUNDA_REGION:-sin-2}
+      RENTAL_SERVICE_URL: http://rental-service:8000
+      PAYMENT_SERVICE_URL: http://payment-service:8000
+      PROXY_URL: http://camunda-proxy:3001
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
+      AMQP_HOST: rabbitmq
+      AMQP_PORT: "5672"
+    command: >
+      sh -c "python worker_account.py &
+             python worker_equipment.py &
+             python worker_initiate_payment.py &
+             python worker_rabbitmq.py &
+             wait"
+    depends_on:
+      rental-service:
+        condition: service_healthy
+      payment-service:
+        condition: service_healthy
+      camunda-proxy:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - esd-net
+
   kong:
     image: kong:3.7
     restart: unless-stopped

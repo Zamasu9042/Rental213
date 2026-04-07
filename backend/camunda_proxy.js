@@ -26,6 +26,7 @@
 
 import express from "express";
 import cors from "cors";
+import Stripe from "stripe";
 
 const app  = express();
 const PORT = process.env.PORT || 3001;
@@ -222,6 +223,92 @@ app.post(
     return res.sendStatus(200);
   }
 );
+
+// ─── Service URLs ────────────────────────────────────────────────────────────
+const RENTAL_SERVICE_URL = process.env.RENTAL_SERVICE_URL || "http://rental-service:8000";
+
+async function createStripeSession({ rentalId, amount, description, successPath }) {
+  const successUrl = `${FRONTEND_URL}${successPath}`;
+  const cancelUrl  = `${FRONTEND_URL}/my-rentals`;
+
+  if (stripe) {
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ["card"],
+      line_items: [{
+        price_data: {
+          currency: "sgd",
+          product_data: { name: description },
+          unit_amount: Math.round(amount * 100),
+        },
+        quantity: 1,
+      }],
+      mode: "payment",
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+      metadata: { rental_id: String(rentalId) },
+    });
+    return session.url;
+  } else {
+    return successUrl;
+  }
+}
+
+/**
+ * POST /api/retry-payment
+ * Creates a new Stripe session for a PENDING rental.
+ */
+app.post("/api/retry-payment", express.json(), async (req, res) => {
+  const { rentalId } = req.body;
+  if (!rentalId) return res.status(400).json({ error: "rentalId required" });
+
+  try {
+    const r = await fetch(`${RENTAL_SERVICE_URL}/rental/${rentalId}`);
+    if (!r.ok) return res.status(404).json({ error: "Rental not found" });
+    const rental = await r.json();
+
+    const start  = new Date(rental.start_time);
+    const end    = new Date(rental.end_time);
+    const hours  = Math.max((end - start) / 3_600_000, 0);
+    const amount = Math.ceil(hours) * (rental.hourly_rate || 0);
+
+    const url = await createStripeSession({
+      rentalId,
+      amount,
+      description: `Rental payment (rental #${rentalId})`,
+      successPath: `/confirmation?rental_id=${rentalId}`,
+    });
+
+    stripeStore.set(`retry-${rentalId}-${Date.now()}`, { stripeUrl: url, rentalId });
+    return res.json({ stripeRedirectUrl: url });
+  } catch (err) {
+    console.error("[proxy] /api/retry-payment error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/late-payment
+ * Creates a Stripe session for paying a late fee.
+ */
+app.post("/api/late-payment", express.json(), async (req, res) => {
+  const { rentalId, feeAmount } = req.body;
+  if (!rentalId || !feeAmount) return res.status(400).json({ error: "rentalId and feeAmount required" });
+
+  try {
+    const url = await createStripeSession({
+      rentalId,
+      amount: feeAmount,
+      description: `Late fee (rental #${rentalId})`,
+      successPath: `/confirmation?rental_id=${rentalId}&fee_paid=1`,
+    });
+
+    stripeStore.set(`late-${rentalId}-${Date.now()}`, { stripeUrl: url, rentalId });
+    return res.json({ stripeRedirectUrl: url });
+  } catch (err) {
+    console.error("[proxy] /api/late-payment error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
 
 // ─── Health ───────────────────────────────────────────────────────────────────
 app.get("/health", (_req, res) => res.json({

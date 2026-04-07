@@ -94,6 +94,34 @@ services:
           - POST
           - OPTIONS
 
+  # Camunda Proxy — POST /api/retry-payment
+  - name: camunda-proxy-retry
+    url: http://camunda-proxy:3001
+    connect_timeout: 10000
+    read_timeout: 60000
+    routes:
+      - name: camunda-retry-route
+        paths:
+          - /api/retry-payment
+        strip_path: false
+        methods:
+          - POST
+          - OPTIONS
+
+  # Camunda Proxy — POST /api/late-payment
+  - name: camunda-proxy-late
+    url: http://camunda-proxy:3001
+    connect_timeout: 10000
+    read_timeout: 60000
+    routes:
+      - name: camunda-late-route
+        paths:
+          - /api/late-payment
+        strip_path: false
+        methods:
+          - POST
+          - OPTIONS
+
   # Account Service — POST /api/account/login, GET /api/account/:id
   - name: account-svc
     url: http://account-service:8000/account
