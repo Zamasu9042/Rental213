@@ -90,6 +90,7 @@ export const LoginPage: React.FC = () => {
                 { label: 'Renter 2', email: 'renter2check@gmail.com', password: 'password123' },
                 { label: 'Owner', email: 'owner@test.com', password: 'password123' },
                 { label: 'Staff', email: 'staff@test.com', password: 'password123' },
+                { label: 'Renter 3', email: 'renter3@test.com', password: 'password123' },
               ].map(({ label, email: e, password: p }) => (
                 <button
                   key={e}

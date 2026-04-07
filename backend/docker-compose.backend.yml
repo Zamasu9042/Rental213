@@ -2,24 +2,6 @@
 # Starts second. All services wait for infra to be healthy.
 # Run standalone:  docker compose -f infra/docker-compose.infra.yml \
 #                                 -f backend/docker-compose.backend.yml up
-#
-# FIXES applied:
-#   Issue 6 — worker-initiate-payment now has depends_on guards for
-#             rental-service, payment-service, and camunda-proxy so it
-#             doesn't attempt its first job against services that aren't ready.
-#
-#   Issue 7 — notification-service now loads ../.env via env_file so that
-#             TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_FROM_NUMBER
-#             and ACCOUNT_SERVICE_URL are present in the container.
-#             Previously those vars were never injected and SMS was silently skipped.
-#
-#   Issue 8 — camunda-proxy now receives PAYMENT_SERVICE_URL explicitly so the
-#             webhook forwarding target is unambiguous and not left to the hardcoded
-#             fallback inside camunda_proxy.js.
-#
-#   Also added — payment-service was entirely absent from this file (it only
-#             existed in the standalone backend/compose.yaml). Without it the
-#             worker-initiate-payment and the webhook handler had nothing to talk to.
 
 networks:
   esd-net:
@@ -145,10 +127,19 @@ services:
       context: ./damage-claim-service
       dockerfile: Dockerfile
     restart: unless-stopped
+    env_file:
+      - path: ../.env
+        required: false
     environment:
       DATABASE_URL: mysql+pymysql://damage:damage_pass@damage-db:3306/damage_claims_db
       VISION_SERVICE_URL: http://vision-service:8000
       DAMAGE_PUBLIC_BASE: http://damage-claim-service:8000
+      RENTAL_SERVICE_URL: http://rental-service:8000
+      CAMUNDA_CLIENT_ID: ${CAMUNDA_CLIENT_ID}
+      CAMUNDA_CLIENT_SECRET: ${CAMUNDA_CLIENT_SECRET}
+      CAMUNDA_CLUSTER_ID: ${CAMUNDA_CLUSTER_ID}
+      CAMUNDA_REGION: ${CAMUNDA_REGION:-sin-2}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
     volumes:
       - damage_photos:/data/photos
     ports:
@@ -158,6 +149,8 @@ services:
         condition: service_healthy
       vision-service:
         condition: service_healthy
+      rental-service:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
       interval: 10s
@@ -166,9 +159,6 @@ services:
       start_period: 15s
     networks: [esd-net]
 
-  # ISSUE 7 FIX: added env_file so TWILIO_* and ACCOUNT_SERVICE_URL are injected.
-  # Previously the container had no Twilio credentials and _send_sms() silently
-  # skipped every notification.
   notification-service:
     build:
       context: ./notification-service
@@ -178,8 +168,6 @@ services:
       - path: ../.env
         required: false
     environment:
-      # Explicit env vars override anything from env_file for these keys,
-      # ensuring the service always connects to the right internal hosts.
       AMQP_HOST: rabbitmq
       AMQP_PORT: "5672"
       AMQP_EXCHANGE: rental_topic
@@ -201,11 +189,6 @@ services:
       retries: 5
       start_period: 25s
     networks: [esd-net]
-
-  # ── Payment service (was missing from this file entirely) ─────────────────
-  # This is the real payment microservice that creates Stripe Checkout sessions
-  # and handles the webhook finalization. It was only in backend/compose.yaml
-  # (the standalone monolith compose) and never started via the root compose.
 
   payment-service:
     build:
@@ -239,8 +222,6 @@ services:
       start_period: 20s
     networks: [esd-net]
 
-  # ── Stripe payment wrapper ─────────────────────────────────────────────────
-
   payment-wrapper:
     build:
       context: ./payment-wrapper
@@ -258,13 +239,6 @@ services:
       start_period: 10s
     networks: [esd-net]
 
-  # ── Camunda orchestration proxy ────────────────────────────────────────────
-  # Handles: POST /api/rentals → starts Camunda workflow
-  #          GET  /api/rentals/:key/stripe-url → frontend polling
-  #          POST /webhook/stripe → Stripe webhook → forwards to payment-service
-
-  # ISSUE 8 FIX: added PAYMENT_SERVICE_URL so webhook forwarding is explicit.
-  # Previously it fell back to the hardcoded default inside camunda_proxy.js.
   camunda-proxy:
     build:
       context: .
@@ -282,7 +256,6 @@ services:
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
       RENTAL_SERVICE_URL: http://rental-service:8000
-      # ISSUE 8 FIX: explicitly wire proxy → payment-service for webhook forwarding
       PAYMENT_SERVICE_URL: http://payment-service:8000
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
     ports:
@@ -294,7 +267,7 @@ services:
         condition: service_healthy
     networks: [esd-net]
 
-  # ── Camunda Workers ────────────────────────────────────────────────────────
+  # ── Scenario 1 Camunda Workers ─────────────────────────────────────────────
 
   worker-account:
     build:
@@ -330,11 +303,6 @@ services:
         condition: service_healthy
     networks: [esd-net]
 
-  # ISSUE 6 FIX: added depends_on for rental-service, payment-service, and
-  # camunda-proxy. Previously this worker started immediately and its first
-  # Camunda job would fire HTTP calls into services that weren't ready yet.
-  # restart: unless-stopped catches transient failures but the clean fix is
-  # to not start the worker until its dependencies are actually up.
   worker-initiate-payment:
     build:
       context: ./workers
@@ -347,7 +315,6 @@ services:
       CAMUNDA_CLUSTER_ID: ${CAMUNDA_CLUSTER_ID}
       CAMUNDA_REGION: ${CAMUNDA_REGION:-sin-2}
       RENTAL_SERVICE_URL: http://rental-service:8000
-      # ISSUE 6 (related): correct target is payment-service, not payment-wrapper
       PAYMENT_SERVICE_URL: http://payment-service:8000
       PROXY_URL: http://camunda-proxy:3001
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
@@ -365,6 +332,65 @@ services:
       context: ./workers
       dockerfile: Dockerfile.workers
     command: python worker_rabbitmq.py
+    restart: unless-stopped
+    environment:
+      CAMUNDA_CLIENT_ID: ${CAMUNDA_CLIENT_ID}
+      CAMUNDA_CLIENT_SECRET: ${CAMUNDA_CLIENT_SECRET}
+      CAMUNDA_CLUSTER_ID: ${CAMUNDA_CLUSTER_ID}
+      CAMUNDA_REGION: ${CAMUNDA_REGION:-sin-2}
+      AMQP_HOST: rabbitmq
+      AMQP_PORT: "5672"
+      AMQP_EXCHANGE: rental_topic
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks: [esd-net]
+
+  # ── Scenario 3 Camunda Workers ─────────────────────────────────────────────
+
+  worker-damage-equipment:
+    build:
+      context: ./workers
+      dockerfile: Dockerfile.workers
+    command: python worker_damage_equipment.py
+    restart: unless-stopped
+    environment:
+      CAMUNDA_CLIENT_ID: ${CAMUNDA_CLIENT_ID}
+      CAMUNDA_CLIENT_SECRET: ${CAMUNDA_CLIENT_SECRET}
+      CAMUNDA_CLUSTER_ID: ${CAMUNDA_CLUSTER_ID}
+      CAMUNDA_REGION: ${CAMUNDA_REGION:-sin-2}
+      EQUIPMENT_SERVICE_URL: http://equipment-service:8000
+    depends_on:
+      equipment-service:
+        condition: service_healthy
+    networks: [esd-net]
+
+  worker-damage-payment:
+    build:
+      context: ./workers
+      dockerfile: Dockerfile.workers
+    command: python worker_damage_payment.py
+    restart: unless-stopped
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      CAMUNDA_CLIENT_ID: ${CAMUNDA_CLIENT_ID}
+      CAMUNDA_CLIENT_SECRET: ${CAMUNDA_CLIENT_SECRET}
+      CAMUNDA_CLUSTER_ID: ${CAMUNDA_CLUSTER_ID}
+      CAMUNDA_REGION: ${CAMUNDA_REGION:-sin-2}
+      PAYMENT_SERVICE_URL: http://payment-service:8000
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
+    depends_on:
+      payment-service:
+        condition: service_healthy
+    networks: [esd-net]
+
+  worker-damage-notification:
+    build:
+      context: ./workers
+      dockerfile: Dockerfile.workers
+    command: python worker_damage_notification.py
     restart: unless-stopped
     environment:
       CAMUNDA_CLIENT_ID: ${CAMUNDA_CLIENT_ID}

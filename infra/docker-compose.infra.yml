@@ -13,8 +13,7 @@ volumes:
   reputation_mysql_data: { name: esd_reputation_mysql_data }
   account_mysql_data:    { name: esd_account_mysql_data }
   damage_mysql_data:     { name: esd_damage_mysql_data }
-  payment_mysql_data: { name: esd_payment_mysql_data }
-  
+  payment_mysql_data:    { name: esd_payment_mysql_data }
 
 services:
 
@@ -54,7 +53,11 @@ services:
       MYSQL_ROOT_PASSWORD: root_rental
     volumes:
       - rental_mysql_data:/var/lib/mysql
-      - ../backend/rental-service/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+      - ../backend/rental-service/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      # FIX: seed-data.sql was never mounted here — rental DB was always empty on boot
+      # when using the root docker-compose.yml. Only the standalone backend/compose.yaml
+      # had this mount. Added here so renter1 demo data loads correctly.
+      - ../backend/rental-service/seed-data.sql:/docker-entrypoint-initdb.d/02-seed-data.sql:ro
     ports:
       - "3308:3306"
     healthcheck:
@@ -142,7 +145,10 @@ services:
       MYSQL_ROOT_PASSWORD: root_payment
     volumes:
       - payment_mysql_data:/var/lib/mysql
-      - ../backend/payment-service/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+      - ../backend/payment-service/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      # Payment seed: unpaid late fee row for rental 4 so renter1 sees outstanding
+      # payment immediately on login without needing to trigger the flow manually.
+      - ../backend/payment-service/seed-data.sql:/docker-entrypoint-initdb.d/02-seed-data.sql:ro
     ports:
       - "3312:3306"
     healthcheck:
@@ -203,7 +209,7 @@ services:
       KONG_ADMIN_LISTEN: "127.0.0.1:8001"
       KONG_LOG_LEVEL: warn
     ports:
-      - "8000:8000"   # only external-facing port (besides frontend :3000)
+      - "8000:8000"
     volumes:
       - ./kong.yml:/kong/declarative/kong.yml:ro
     depends_on:

@@ -545,11 +545,23 @@ const RentalCard: React.FC<RentalCardProps> = ({
             )}
 
             {/* ── LATE ── */}
-            {rental.status === 'LATE' && isRenter && (
-              <Button size="sm" variant="destructive" className="gap-1 h-8 text-xs" onClick={() => onNavigate(`/late-fee/${rental.id}`)}>
-                <CreditCard className="w-3 h-3" /> Pay late fee
-              </Button>
-            )}
+            {/* ── LATE: already processed, unpaid fee ── */}
+          {rental.status === 'LATE' && isRenter && (
+            <Button size="sm" variant="destructive" className="gap-1 h-8 text-xs"
+              onClick={() => onNavigate(`/late-fee/${rental.id}`)}>
+              <CreditCard className="w-3 h-3" /> Pay late fee
+            </Button>
+          )}
+
+          {/* ── RETURNED late: fee not yet recorded — LateFeePage will record + redirect ── */}
+          {rental.status === 'RETURNED' && isRenter &&
+            rental.return_timestamp &&
+            new Date(rental.return_timestamp) > new Date(rental.end_time) && (
+            <Button size="sm" variant="destructive" className="gap-1 h-8 text-xs"
+              onClick={() => onNavigate(`/late-fee/${rental.id}`)}>
+              <CreditCard className="w-3 h-3" /> Pay late fee
+            </Button>
+          )}
           </div>
         </div>
 
