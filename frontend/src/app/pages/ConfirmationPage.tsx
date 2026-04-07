@@ -23,8 +23,8 @@ import {
 } from 'lucide-react';
 import {
   getRental, getRenterDashboard, getEquipmentById, getRentalsForEquipment,
-  getEquipment, getAllEquipment, markCollected, confirmReturn,
-  getAccount, getDamageClaimByRental,
+  getEquipment, getAllEquipment, markCollected, confirmReturn, startReturnWorkflow,
+  getAccount, getDamageClaimByRental, getPayment, syncPaymentFromStripe, seedDemoRental,
   ApiRental, ApiDamageClaim,
 } from '../../lib/api';
 import { RENTAL_STATUS_BADGE } from '../../lib/rentalStatusBadges';
@@ -83,6 +83,7 @@ export const ConfirmationPage: React.FC = () => {
   const { user } = useApp();
 
   const rentalIdParam = searchParams.get('rental_id');
+  const paymentIdParam = searchParams.get('payment_id');
   const isMock = searchParams.get('mock') === '1';
   const isPostPayment = !!rentalIdParam;
 
@@ -100,6 +101,30 @@ export const ConfirmationPage: React.FC = () => {
   // Track which rental IDs are currently being actioned (spinner)
   const [actioning, setActioning] = useState<Set<number>>(new Set());
   const [reviewRental, setReviewRental] = useState<RentalDisplay | null>(null);
+
+  // Simulate late return: set of rental IDs where the renter toggled the demo flag
+  const [simulateLateSet, setSimulateLateSet] = useState<Set<number>>(new Set());
+  const toggleSimulateLate = (rentalId: number) =>
+    setSimulateLateSet(prev => {
+      const next = new Set(prev);
+      next.has(rentalId) ? next.delete(rentalId) : next.add(rentalId);
+      return next;
+    });
+
+  // Demo: seed a COLLECTED rental with past due date so Scenario 2 can be demonstrated
+  const [seeding, setSeeding] = useState(false);
+  const handleSeedDemo = async () => {
+    if (!user) return;
+    setSeeding(true);
+    try {
+      await seedDemoRental(Number(user.id));
+      await load();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Seed failed — check backend logs');
+    } finally {
+      setSeeding(false);
+    }
+  };
 
   // ── Read URL filter param on mount ─────────────────────────────────────────
 
@@ -219,10 +244,62 @@ export const ConfirmationPage: React.FC = () => {
     }
   };
 
+  /**
+   * Scenario 2: After rental service records the dual confirm-return,
+   * if the rental transitions to RETURNED, POST to Camunda's /api/return-workflow.
+   * Camunda checks late, records late fee, marks equipment available, then:
+   *   - isLate=true  → navigate to /late-fee/:rentalId
+   *   - isLate=false → stay on page (rental will show COMPLETED)
+   */
+  const handleConfirmReturn = async (rentalId: number, endTime: string) => {
+    setActioning(prev => new Set(prev).add(rentalId));
+    try {
+      // If the demo "simulate late return" flag is set, override the return timestamp
+      // to end_time + 2 hours so Camunda detects a late return.
+      let returnTs: string | undefined;
+      if (simulateLateSet.has(rentalId)) {
+        const late = new Date(endTime);
+        late.setHours(late.getHours() + 2);
+        returnTs = late.toISOString();
+      }
+      const updated = await confirmReturn(rentalId, Number(user!.id), returnTs);
+
+      if (updated.status === 'RETURNED') {
+        // Both parties confirmed — trigger Camunda return workflow
+        try {
+          const result = await startReturnWorkflow(rentalId);
+          if (result.reverted && result.error) {
+            alert(result.error);
+          } else if (result.isLate && result.paymentId != null) {
+            navigate(`/late-fee/${rentalId}`, {
+              state: { paymentId: result.paymentId, lateFee: result.lateFee },
+            });
+            return;
+          }
+        } catch (err) {
+          alert(err instanceof Error ? err.message : 'Return workflow failed. Please contact support.');
+        }
+      }
+
+      await load();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Action failed');
+    } finally {
+      setActioning(prev => { const s = new Set(prev); s.delete(rentalId); return s; });
+    }
+  };
+
   // ── Post-payment single rental view ────────────────────────────────────────
 
   if (isPostPayment && rentalIdParam) {
-    return <PostPaymentView rentalIdParam={rentalIdParam} isMock={isMock} navigate={navigate} />;
+    return (
+      <PostPaymentView
+        rentalIdParam={rentalIdParam}
+        paymentIdParam={paymentIdParam}
+        isMock={isMock}
+        navigate={navigate}
+      />
+    );
   }
 
   // ── Main My Rentals view ────────────────────────────────────────────────────
@@ -334,7 +411,19 @@ export const ConfirmationPage: React.FC = () => {
                   : `No rentals need ${FILTER_EMPTY[filterTab]} right now.`}
               </p>
               {topTab === 'renting' && filterTab === 'all' && (
-                <Button onClick={() => navigate('/marketplace')}>Browse Marketplace</Button>
+                <div className="flex flex-col items-center gap-3">
+                  <Button onClick={() => navigate('/marketplace')}>Browse Marketplace</Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={seeding}
+                    onClick={handleSeedDemo}
+                    className="text-amber-700 border-amber-400 hover:bg-amber-50"
+                  >
+                    {seeding ? <><Loader2 className="w-3 h-3 animate-spin mr-1" />Seeding...</> : '⚡ Seed Demo Late Rental (Scenario 2)'}
+                  </Button>
+                  <p className="text-xs text-gray-400">Creates a COLLECTED rental with past due date for your account</p>
+                </div>
               )}
             </CardContent>
           </Card>
@@ -349,7 +438,9 @@ export const ConfirmationPage: React.FC = () => {
                 isActioning={actioning.has(rental.id)}
                 existingClaim={topTab === 'rented-out' ? (claimsByRental[rental.id] ?? null) : undefined}
                 onCollect={() => runAction(rental.id, () => markCollected(rental.id, Number(user!.id)))}
-                onConfirmReturn={() => runAction(rental.id, () => confirmReturn(rental.id, Number(user!.id)))}
+                simulateLate={simulateLateSet.has(rental.id)}
+                onToggleSimulateLate={() => toggleSimulateLate(rental.id)}
+                onConfirmReturn={() => handleConfirmReturn(rental.id, rental.end_time)}
                 onOpenReview={() => setReviewRental(rental)}
                 onFileClaim={() => navigate(`/damage-claim/${rental.id}`, {
                   state: {
@@ -399,6 +490,9 @@ interface RentalCardProps {
   isActioning: boolean;
   /** undefined = renter view / not applicable. null = no claim yet. object = claim exists. */
   existingClaim?: ApiDamageClaim | null;
+  /** True when the renter toggled the "simulate late return" demo flag for this rental. */
+  simulateLate: boolean;
+  onToggleSimulateLate: () => void;
   onCollect: () => void;
   onConfirmReturn: () => void;
   onOpenReview: () => void;
@@ -410,6 +504,7 @@ interface RentalCardProps {
 const RentalCard: React.FC<RentalCardProps> = ({
   rental, userId, isOwnerView, isActioning,
   existingClaim,
+  simulateLate, onToggleSimulateLate,
   onCollect, onConfirmReturn, onOpenReview, onFileClaim, onViewClaim, onNavigate,
 }) => {
   const badge = STATUS_BADGE[rental.status] ?? { variant: 'outline' as const, label: rental.status };
@@ -591,6 +686,17 @@ const RentalCard: React.FC<RentalCardProps> = ({
             <span className="font-medium text-amber-950 shrink-0">Return</span>
             <ConfirmRow label="Renter" done={rental.renter_returned} />
             <ConfirmRow label="Owner"  done={rental.owner_returned} />
+            {isRenter && !rental.renter_returned && (
+              <label className="ml-auto flex items-center gap-1 cursor-pointer select-none text-amber-800 hover:text-amber-900">
+                <input
+                  type="checkbox"
+                  checked={simulateLate}
+                  onChange={onToggleSimulateLate}
+                  className="rounded border-amber-400 accent-amber-600"
+                />
+                Simulate late return
+              </label>
+            )}
           </div>
         )}
         {rental.status === 'RETURNED' && (
@@ -627,22 +733,54 @@ const ConfirmRow: React.FC<{ label: string; done: boolean }> = ({ label, done })
 
 // ── Post-payment view ─────────────────────────────────────────────────────────
 
-const PostPaymentView: React.FC<{ rentalIdParam: string; isMock: boolean; navigate: ReturnType<typeof useNavigate> }> = ({ rentalIdParam, isMock, navigate }) => {
+const PostPaymentView: React.FC<{
+  rentalIdParam: string;
+  paymentIdParam: string | null;
+  isMock: boolean;
+  navigate: ReturnType<typeof useNavigate>;
+}> = ({ rentalIdParam, paymentIdParam, isMock, navigate }) => {
   const [rental, setRental] = useState<ApiRental | null>(null);
   const [equipmentName, setEquipmentName] = useState('');
   const [loading, setLoading] = useState(true);
+  const [mockLateFee, setMockLateFee] = useState(false);
 
   useEffect(() => {
-    getRental(Number(rentalIdParam))
-      .then(async r => {
+    let cancelled = false;
+    (async () => {
+      try {
+        // Real Stripe: webhooks often miss localhost — sync session before loading rental
+        if (paymentIdParam && !isMock) {
+          for (let attempt = 0; attempt < 8 && !cancelled; attempt++) {
+            try {
+              const s = await syncPaymentFromStripe(Number(paymentIdParam));
+              if (s.synced || s.status === 'paid' || s.message === 'already_paid') break;
+              if (s.stripe_payment_status && s.stripe_payment_status !== 'unpaid') break;
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e);
+              if (msg.includes('503') || msg.includes('Stripe not configured')) break;
+            }
+            await new Promise(r => setTimeout(r, 1200));
+          }
+        }
+        const r = await getRental(Number(rentalIdParam));
+        if (cancelled) return;
         setRental(r);
         try {
           const eq = await getEquipmentById(r.equipment_id);
-          setEquipmentName(eq.name);
+          if (!cancelled) setEquipmentName(eq.name);
         } catch { /* non-fatal */ }
-      })
-      .finally(() => setLoading(false));
-  }, [rentalIdParam]);
+        if (isMock && paymentIdParam) {
+          try {
+            const pay = await getPayment(Number(paymentIdParam));
+            if (!cancelled && pay.type === 'late') setMockLateFee(true);
+          } catch { /* ignore */ }
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [rentalIdParam, paymentIdParam, isMock]);
 
   if (loading) return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -655,9 +793,19 @@ const PostPaymentView: React.FC<{ rentalIdParam: string; isMock: boolean; naviga
       <div className="max-w-2xl mx-auto px-4 py-12">
         <div className="bg-white rounded-lg p-8 mb-6 text-center shadow-sm">
           <CheckCircle className="w-16 h-16 text-green-500 mx-auto mb-4" />
-          <h1 className="text-3xl mb-2">{isMock ? 'Booking Created!' : 'Payment Successful!'}</h1>
+          <h1 className="text-3xl mb-2">
+            {mockLateFee && isMock
+              ? 'Late Fee Recorded'
+              : isMock
+                ? 'Booking Created!'
+                : 'Payment Successful!'}
+          </h1>
           <p className="text-gray-600">
-            {isMock ? 'Mock mode — Stripe not configured.' : 'Confirmation SMS will be sent shortly.'}
+            {mockLateFee && isMock
+              ? 'Mock mode — late fee was finalized without Stripe. Confirmation SMS is sent if notification-service is running.'
+              : isMock
+                ? 'Mock mode — Stripe not configured.'
+                : 'Confirmation SMS will be sent shortly.'}
           </p>
         </div>
         {rental && (

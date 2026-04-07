@@ -42,6 +42,22 @@ class CreatePaymentIntentResponse(BaseModel):
     status: str             # e.g. "requires_payment_method"
 
 
+class CreateCheckoutSessionRequest(BaseModel):
+    amount: float           # in main currency unit e.g. 49.99
+    currency: str           # e.g. "sgd"
+    item_name: str
+    payment_id: int
+    rental_id: int
+    kind: str               # "rental" or "late"
+    success_url: str
+    cancel_url: str
+
+
+class CreateCheckoutSessionResponse(BaseModel):
+    checkout_url: str
+    session_id: str
+
+
 class RefundRequest(BaseModel):
     payment_intent_id: str
     reason: Optional[str] = "requested_by_customer"  # or "duplicate" / "fraudulent"
@@ -111,6 +127,74 @@ def create_payment_intent(body: CreatePaymentIntentRequest):
         amount             = intent.amount,
         currency           = intent.currency,
         status             = intent.status,
+    )
+
+
+# ── CREATE CHECKOUT SESSION ───────────────────────────────────────────────────
+
+@app.post("/payment/create-checkout-session", response_model=CreateCheckoutSessionResponse, tags=["Payment"])
+def create_checkout_session(body: CreateCheckoutSessionRequest):
+    """
+    Creates a Stripe Checkout Session (hosted payment page).
+    Called by payment-service so it doesn't need to know about Stripe directly.
+
+    Flow:
+        payment-service  →  POST /payment/create-checkout-session  (this endpoint)
+                         ←  { checkout_url, session_id }
+        payment-service  →  returns checkout_url to caller
+        user browser     →  redirected to checkout_url (Stripe hosted page)
+        Stripe           →  POST /webhook/stripe after payment
+    """
+    if not stripe.api_key:
+        raise HTTPException(status_code=500, detail="Stripe key not configured.")
+
+    amount_cents = int(round(body.amount * 100))
+
+    try:
+        # Metadata values must be strings (Stripe). client_reference_id is a reliable
+        # webhook fallback when metadata is empty in some dashboard/API configurations.
+        session = stripe.checkout.Session.create(
+            payment_method_types=["card"],
+            line_items=[
+                {
+                    "price_data": {
+                        "currency": body.currency.lower(),
+                        "product_data": {"name": body.item_name},
+                        "unit_amount": amount_cents,
+                    },
+                    "quantity": 1,
+                }
+            ],
+            mode="payment",
+            success_url=body.success_url,
+            cancel_url=body.cancel_url,
+            client_reference_id=str(body.payment_id),
+            metadata={
+                "payment_id": str(body.payment_id),
+                "rental_id": str(body.rental_id),
+                "kind": str(body.kind),
+            },
+        )
+    except stripe.error.StripeError as e:
+        raise HTTPException(status_code=402, detail=str(e.user_message))
+
+    md = {}
+    try:
+        if getattr(session, "metadata", None) is not None:
+            md = dict(session.metadata)
+    except Exception:
+        md = {"_error": "could not serialize metadata"}
+    cref = getattr(session, "client_reference_id", None)
+    print(
+        "[payment-wrapper] checkout created "
+        f"session_id={session.id} client_reference_id={cref} "
+        f"metadata={md} rental_id={body.rental_id} payment_id={body.payment_id} kind={body.kind}",
+        flush=True,
+    )
+
+    return CreateCheckoutSessionResponse(
+        checkout_url=session.url or "",
+        session_id=session.id,
     )
 
 

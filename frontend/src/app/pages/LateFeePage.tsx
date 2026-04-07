@@ -1,24 +1,46 @@
 /**
  * LateFeePage.tsx — Scenario 2 late fee payment flow
  *
- * 1. On mount: POST /api/payment/outstanding → records unpaid late-fee row, gets amount
- * 2. User clicks Pay → POST /api/payment/outstanding/:id/checkout → Stripe URL
- * 3. Redirect to Stripe Hosted Checkout
- * 4. On success Stripe → /confirmation?rental_id=X
+ * Entry points:
+ *   A) From return-workflow (ConfirmationPage) — navigation state carries paymentId + lateFee
+ *      → Skip the GET fetch; show amount immediately, user clicks Pay.
+ *   B) From My Rentals "Pay late fee" button (returning user, LATE rental)
+ *      → GET /api/payment/rental/:id/late-fee to load existing unpaid payment.
+ *      → If 404 (payment not yet recorded), fall back to POST /api/payment/outstanding.
+ *
+ * Pay button:
+ *   POST /api/payment/outstanding/:paymentId/checkout → Stripe URL → redirect
+ *
+ * After Stripe payment:
+ *   Stripe webhook → payment-service (marks PAID) → camunda-proxy /internal/late-payment-confirmed
+ *   Camunda: deducts reputation, marks rental COMPLETED, publishes RabbitMQ → SMS via notification-service
+ *
+ * Stripe redirects to: /confirmation?rental_id=X&payment_id=Y
  */
 
 import React, { useEffect, useState } from 'react';
-import { useParams, useNavigate } from 'react-router';
+import { useParams, useNavigate, useLocation } from 'react-router';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
-import { ChevronLeft, Loader2, CreditCard, AlertCircle, Clock } from 'lucide-react';
-import { recordOutstandingLateFee, checkoutOutstandingLateFee, ApiPayment } from '../../lib/api';
+import { ChevronLeft, Loader2, CreditCard, AlertCircle, Clock, CheckCircle } from 'lucide-react';
+import {
+  getLateFeePayment,
+  recordOutstandingLateFee,
+  checkoutOutstandingLateFee,
+  ApiPayment,
+} from '../../lib/api';
 
-type PageState = 'loading' | 'ready' | 'paying' | 'error';
+type PageState = 'loading' | 'ready' | 'paying' | 'already-paid' | 'error';
+
+interface NavState {
+  paymentId?: number;
+  lateFee?: number;
+}
 
 export const LateFeePage: React.FC = () => {
   const { rentalId } = useParams<{ rentalId: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const [pageState, setPageState] = useState<PageState>('loading');
   const [payment, setPayment] = useState<ApiPayment | null>(null);
@@ -27,17 +49,41 @@ export const LateFeePage: React.FC = () => {
   useEffect(() => {
     if (!rentalId) { navigate('/my-rentals'); return; }
 
-    recordOutstandingLateFee(Number(rentalId))
-      .then(p => {
-        setPayment(p);
+    const navState = (location.state ?? {}) as NavState;
+
+    (async () => {
+      try {
+        let resolved: ApiPayment | null = null;
+
+        // Try GET first (returns existing unpaid row).
+        // Fall back to POST /outstanding for any failure — handles both:
+        //   • Old container not yet rebuilt (route doesn't exist → "Not Found")
+        //   • No payment record yet (404 "No unpaid late fee for this rental")
+        // POST /outstanding is idempotent: returns existing dup if one exists,
+        // or creates a new one if the rental is LATE/RETURNED.
+        try {
+          resolved = await getLateFeePayment(Number(rentalId));
+        } catch {
+          resolved = await recordOutstandingLateFee(Number(rentalId));
+        }
+
+        if (!resolved) throw new Error('Could not load late fee details.');
+
+        // If payment is already paid, the rental is being completed asynchronously
+        if (resolved.status === 'paid') {
+          setPageState('already-paid');
+          return;
+        }
+
+        setPayment(resolved);
         setPageState('ready');
-      })
-      .catch(err => {
+      } catch (err) {
         const msg = err instanceof Error ? err.message : 'Failed to load late fee details.';
         setErrorMessage(msg);
         setPageState('error');
-      });
-  }, [rentalId]);
+      }
+    })();
+  }, [rentalId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handlePay = async () => {
     if (!payment) return;
@@ -78,7 +124,7 @@ export const LateFeePage: React.FC = () => {
             {pageState === 'loading' && (
               <div className="flex items-center justify-center py-12 gap-3 text-gray-500">
                 <Loader2 className="w-5 h-5 animate-spin" />
-                <span>Calculating late fee...</span>
+                <span>Loading late fee details...</span>
               </div>
             )}
 
@@ -101,7 +147,10 @@ export const LateFeePage: React.FC = () => {
 
                 <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800">
                   <p className="font-semibold mb-1">Why am I being charged?</p>
-                  <p>The equipment was returned after the agreed end date. Late fees are calculated based on the hourly rate for each hour overdue.</p>
+                  <p>
+                    The equipment was returned after the agreed end date. Late fees are
+                    calculated based on the hourly rate for each hour overdue (minimum 1 hour).
+                  </p>
                 </div>
 
                 <Button
@@ -123,6 +172,24 @@ export const LateFeePage: React.FC = () => {
               </div>
             )}
 
+            {pageState === 'already-paid' && (
+              <div className="space-y-4">
+                <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4 flex gap-3">
+                  <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-semibold text-emerald-800">Late fee already paid</p>
+                    <p className="text-sm text-emerald-700 mt-1">
+                      Your payment has been received. Your rental is being marked as completed —
+                      you'll receive a confirmation SMS shortly.
+                    </p>
+                  </div>
+                </div>
+                <Button className="w-full" onClick={() => navigate('/my-rentals')}>
+                  View My Rentals
+                </Button>
+              </div>
+            )}
+
             {pageState === 'error' && (
               <div className="space-y-4">
                 <div className="bg-red-50 border border-red-200 rounded-lg p-4 flex gap-3">
@@ -132,7 +199,11 @@ export const LateFeePage: React.FC = () => {
                     <p className="text-sm text-red-700 mt-1">{errorMessage}</p>
                   </div>
                 </div>
-                <Button variant="outline" className="w-full" onClick={() => navigate('/my-rentals?filter=payment-due')}>
+                <Button
+                  variant="outline"
+                  className="w-full"
+                  onClick={() => navigate('/my-rentals?filter=payment-due')}
+                >
                   Back to My Rentals
                 </Button>
               </div>

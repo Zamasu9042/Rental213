@@ -23,6 +23,10 @@ class RentalReturnBody(BaseModel):
 class ActorBody(BaseModel):
     """Used for dual-confirm endpoints — caller passes their own account_id."""
     account_id: int
+    return_timestamp: Optional[datetime] = Field(
+        default=None,
+        description="Optional override for return time (demo/testing: simulate a late return).",
+    )
 
 
 class RentalOut(BaseModel):

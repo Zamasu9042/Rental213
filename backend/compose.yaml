@@ -5,8 +5,6 @@ volumes:
     name: esd_rental_mysql_data
   reputation_mysql_data:
     name: esd_reputation_mysql_data
-  account_mysql_data:
-    name: esd_account_mysql_data
   rabbitmq_data:
     name: esd_rabbitmq_data
   damage_mysql_data:
@@ -96,30 +94,6 @@ services:
           "-uroot",
           "-proot_reputation",
         ]
-      interval: 5s
-      timeout: 5s
-      retries: 18
-      start_period: 30s
-    networks:
-      - esd-net
-
-  account-db:
-    image: mysql:8.0
-    hostname: account-db
-    restart: unless-stopped
-    environment:
-      MYSQL_DATABASE: account_db
-      MYSQL_USER: account
-      MYSQL_PASSWORD: account_pass
-      MYSQL_ROOT_PASSWORD: root_account
-    volumes:
-      - account_mysql_data:/var/lib/mysql
-      - ./account-service/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
-    ports:
-      - "3310:3306"
-    healthcheck:
-      test:
-        ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot_account"]
       interval: 5s
       timeout: 5s
       retries: 18
@@ -356,33 +330,6 @@ services:
     networks:
       - esd-net
 
-  account-service:
-    build:
-      context: ./account-service
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    environment:
-      DATABASE_URL: mysql+pymysql://account:account_pass@account-db:3306/account_db
-    ports:
-      - "8006:8000"
-    depends_on:
-      account-db:
-        condition: service_healthy
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')",
-        ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
-    networks:
-      - esd-net
-
   notification-service:
     build:
       context: ./notification-service
@@ -396,7 +343,7 @@ services:
       AMQP_PORT: "5672"
       AMQP_EXCHANGE: rental_topic
       NOTIFICATION_QUEUE: notification_SendPaymentConfirmation
-      ACCOUNT_SERVICE_URL: http://account-service:8000
+      KONG_URL: http://kong:8000
     ports:
       - "8007:8000"
     depends_on:
@@ -404,8 +351,6 @@ services:
         condition: service_healthy
       amqp-setup:
         condition: service_completed_successfully
-      account-service:
-        condition: service_healthy
     healthcheck:
       test:
         [
@@ -496,13 +441,13 @@ services:
         required: false
     environment:
       PORT: "3001"
-      CAMUNDA_CLIENT_ID: ${CAMUNDA_CLIENT_ID:-AQazmsVXl7idqPlY1pMGm~Zh7Gv3Lgxk}
-      CAMUNDA_CLIENT_SECRET: ${CAMUNDA_CLIENT_SECRET:-uH0.fzO7HfUxQ0FTlEe0DsBRe-WVgbxIq_BD0H8rpw422I.1Ig.jGZ~9JVZiU0R8}
-      CAMUNDA_CLUSTER_ID: ${CAMUNDA_CLUSTER_ID:-db920878-5333-4352-b103-0803eb907686}
-      CAMUNDA_REGION: ${CAMUNDA_REGION:-sin-2}
       RENTAL_SERVICE_URL: http://rental-service:8000
       PAYMENT_SERVICE_URL: http://payment-service:8000
+      REPUTATION_SERVICE_URL: http://reputation-service:8000
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
+      AMQP_HOST: rabbitmq
+      AMQP_PORT: "5672"
+      AMQP_EXCHANGE: rental_topic
     ports:
       - "3001:3001"
     depends_on:
@@ -510,6 +455,10 @@ services:
         condition: service_healthy
       payment-service:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      amqp-setup:
+        condition: service_completed_successfully
     networks:
       - esd-net
 

@@ -19,13 +19,13 @@ TWILIO_SID    = os.getenv("TWILIO_ACCOUNT_SID", "")
 TWILIO_TOKEN  = os.getenv("TWILIO_AUTH_TOKEN", "")
 TWILIO_FROM   = os.getenv("TWILIO_FROM_NUMBER", "")
 
-ACCOUNT_SERVICE_URL = os.getenv("ACCOUNT_SERVICE_URL", "http://account-service:8000")
+KONG_URL = os.getenv("KONG_URL", "http://kong:8000")
 
 
 def _fetch_phone(renter_id: int) -> str | None:
-    """Look up renter phone number from account-service."""
+    """Look up renter phone via Kong → camunda-proxy → OutSystems."""
     try:
-        r = httpx.get(f"{ACCOUNT_SERVICE_URL}/account/{renter_id}", timeout=10.0)
+        r = httpx.get(f"{KONG_URL}/api/account/{renter_id}", timeout=10.0)
         if r.status_code == 200:
             return r.json().get("phoneNo")
     except Exception as e:
@@ -47,6 +47,7 @@ def _handle_payment_confirmation(payload: dict) -> None:
     rental_id  = payload.get("rental_id")
     amount     = payload.get("amount", 0)
     pay_type   = payload.get("type", "rental")
+    custom     = payload.get("sms_body")
 
     LOG.info("PaymentConfirmation rental=%s renter=%s type=%s amount=%s",
              rental_id, renter_id, pay_type, amount)
@@ -60,11 +61,18 @@ def _handle_payment_confirmation(payload: dict) -> None:
         LOG.warning("No phone number found for renter %s — skipping SMS", renter_id)
         return
 
-    if pay_type == "late":
+    if custom:
+        sms_body = str(custom)
+    elif pay_type == "late":
         sms_body = (
             f"[Rental213] Late fee payment confirmed!\n"
             f"Rental #{rental_id}: SGD {amount:.2f} late fee received.\n"
             f"Your rental is now completed. Thank you."
+        )
+    elif pay_type in ("support", "payment_retry"):
+        sms_body = (
+            f"[Rental213] Action needed for rental #{rental_id}.\n"
+            f"Please open the app or contact support if you need help."
         )
     else:
         sms_body = (

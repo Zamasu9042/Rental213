@@ -164,11 +164,19 @@ export async function markCollected(rentalId: number, accountId: number): Promis
   });
 }
 
-/** Renter or Owner confirms the return (COLLECTED → RETURNED when both done) */
-export async function confirmReturn(rentalId: number, accountId: number): Promise<ApiRental> {
+/** Renter or Owner confirms the return (COLLECTED → RETURNED when both done).
+ *  Pass returnTimestamp to override the recorded return time (demo: simulate a late return). */
+export async function confirmReturn(
+  rentalId: number,
+  accountId: number,
+  returnTimestamp?: string,
+): Promise<ApiRental> {
   return request<ApiRental>(`/api/rental/${rentalId}/confirm-return`, {
     method: "PUT",
-    body: JSON.stringify({ account_id: accountId }),
+    body: JSON.stringify({
+      account_id: accountId,
+      ...(returnTimestamp ? { return_timestamp: returnTimestamp } : {}),
+    }),
   });
 }
 
@@ -195,6 +203,15 @@ export interface ApiPayment {
   message?: string;
 }
 
+/**
+ * Scenario 2: Fetch the existing unpaid late-fee payment for a rental.
+ * Use this when the UI loads for a returning user (LATE rental already exists).
+ * Returns the unpaid payment row, or throws 404 if none found.
+ */
+export async function getLateFeePayment(rentalId: number): Promise<ApiPayment> {
+  return request<ApiPayment>(`/api/payment/rental/${rentalId}/late-fee`);
+}
+
 /** Scenario 2: late check + unpaid late-fee row (logic in payment-service). */
 export async function recordOutstandingLateFee(rentalId: number): Promise<ApiPayment> {
   return request<ApiPayment>("/api/payment/outstanding", {
@@ -206,14 +223,42 @@ export async function recordOutstandingLateFee(rentalId: number): Promise<ApiPay
 export async function checkoutOutstandingLateFee(
   paymentId: number
 ): Promise<ApiPayment & { checkout_url: string }> {
+  // Scenario 2: route through Kong → Camunda (orchestrator) → Payment Service
   return request<ApiPayment & { checkout_url: string }>(
-    `/api/payment/outstanding/${paymentId}/checkout`,
+    `/api/late-fee/${paymentId}/checkout`,
     { method: "POST" }
   );
 }
 
 export async function getPayment(paymentId: number): Promise<ApiPayment> {
   return request<ApiPayment>(`/api/payment/${paymentId}`);
+}
+
+/**
+ * Scenario 2 demo helper: seeds a COLLECTED rental with a past due date.
+ * Owner pickup+return are pre-confirmed so renter's single confirm goes straight to RETURNED.
+ */
+export async function seedDemoRental(
+  renterId: number,
+  equipmentId: number = 1
+): Promise<{ rental_id: number; renter_id: number; end_time: string; status: string }> {
+  return request(`/api/debug/seed-late-return`, {
+    method: "POST",
+    body: JSON.stringify({ renter_id: renterId, equipment_id: equipmentId }),
+  });
+}
+
+/** When returning from Stripe Checkout: mark paid + finalize if webhook never arrived (common on localhost). */
+export async function syncPaymentFromStripe(
+  paymentId: number
+): Promise<
+  ApiPayment & {
+    synced?: boolean;
+    message?: string;
+    stripe_payment_status?: string;
+  }
+> {
+  return request(`/api/payment/${paymentId}/sync-from-stripe`, { method: 'POST' });
 }
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
@@ -227,6 +272,8 @@ export interface LoginResponse {
 }
 
 export async function loginUser(email: string, password: string): Promise<LoginResponse> {
+  // Routes: Frontend → Kong → camunda-proxy → OutSystems
+  // Send lowercase password — camunda-proxy translates to OutSystems' "Password" casing
   return request<LoginResponse>("/api/account/login", {
     method: "POST",
     body: JSON.stringify({ email, password }),
@@ -243,6 +290,7 @@ export interface ApiAccountPublic {
 }
 
 export async function getAccount(accountId: number): Promise<ApiAccountPublic> {
+  // Routes: Frontend → Kong → camunda-proxy → OutSystems
   return request<ApiAccountPublic>(`/api/account/${accountId}`);
 }
 
@@ -350,6 +398,29 @@ export async function pollStripeUrl(processInstanceKey: string, maxAttempts = 15
     if (data.stripeRedirectUrl) return data.stripeRedirectUrl;
   }
   throw new Error("Timed out waiting for Stripe redirect URL. Make sure the backend services are running.");
+}
+
+// ─── Return Workflow (Scenario 2 — through Camunda) ──────────────────────────
+
+export interface ReturnWorkflowResult {
+  isLate: boolean;
+  lateFee?: number;
+  paymentId?: number;
+  reverted?: boolean;
+  error?: string;
+  message?: string;
+}
+
+/**
+ * Scenario 2: Initiates the Camunda return-workflow after both parties confirm return.
+ * Camunda: checks late → marks LATE if needed → records late fee → marks equipment available.
+ * Kong routes /api/return-workflow → camunda-proxy.
+ */
+export async function startReturnWorkflow(rentalId: number): Promise<ReturnWorkflowResult> {
+  return request<ReturnWorkflowResult>("/api/return-workflow", {
+    method: "POST",
+    body: JSON.stringify({ rentalId }),
+  });
 }
 
 // ─── Equipment Rentals (owner view) ──────────────────────────────────────────

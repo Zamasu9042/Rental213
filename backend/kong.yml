@@ -78,8 +78,11 @@ services:
           - POST
           - OPTIONS
 
-  # Camunda Proxy — POST /api/rentals, GET /api/rentals/:key/stripe-url
-  # No strip — proxy has /api/rentals routes defined
+  # Camunda Proxy — POST /api/rentals, GET /api/rentals/:key/stripe-url,
+  #                 POST /api/return-workflow (Scenario 2 return orchestration),
+  #                 POST /api/late-fee/:id/checkout (Scenario 2 late fee checkout via orchestrator),
+  #                 POST /api/account/login, GET /api/account/:id (proxied to OutSystems)
+  # No strip — proxy has all /api/* routes defined internally
   - name: camunda-proxy-rentals
     url: http://camunda-proxy:3001
     connect_timeout: 10000
@@ -88,22 +91,11 @@ services:
       - name: camunda-rentals-route
         paths:
           - /api/rentals
-        strip_path: false
-        methods:
-          - GET
-          - POST
-          - OPTIONS
-
-  # Account Service — POST /api/account/login, GET /api/account/:id
-  - name: account-svc
-    url: http://account-service:8000/account
-    connect_timeout: 10000
-    read_timeout: 15000
-    routes:
-      - name: account-route
-        paths:
+          - /api/return-workflow
+          - /api/late-fee
           - /api/account
-        strip_path: true
+          - /api/debug
+        strip_path: false
         methods:
           - GET
           - POST

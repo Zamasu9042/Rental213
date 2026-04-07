@@ -1,5 +1,5 @@
 import os
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import List, Optional
 
 import httpx
@@ -117,6 +117,47 @@ def _publish_late_fee(
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.post("/rental/demo/seed-collected", response_model=RentalOut, status_code=201)
+def seed_demo_collected_rental(
+    renter_id: int,
+    equipment_id: int,
+    db: Session = Depends(get_db),
+):
+    """
+    Test helper (Scenario 2): creates a COLLECTED rental with a past due date
+    so confirming return is always late. Skips the dual-confirm flow.
+    Safe to call multiple times — returns existing open COLLECTED rental if one exists.
+    """
+    existing = (
+        db.query(Rental)
+        .filter(Rental.renter_id == renter_id)
+        .filter(Rental.equipment_id == equipment_id)
+        .filter(Rental.status == STATUS_COLLECTED)
+        .first()
+    )
+    if existing:
+        return existing
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    row = Rental(
+        renter_id=renter_id,
+        equipment_id=equipment_id,
+        start_time=now - timedelta(days=3),
+        end_time=now - timedelta(days=1),   # due yesterday → return today is always late
+        status=STATUS_COLLECTED,
+        return_timestamp=None,
+        hourly_rate=10.00,
+        pickup_location="SMU / Bras Basah",
+        renter_collected=True,
+        owner_collected=True,
+        owner_returned=True,   # pre-confirm owner so renter's single click transitions to RETURNED
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
 
 
 @app.get("/rental/active", response_model=List[RentalOut])
@@ -462,7 +503,10 @@ def confirm_return(rental_id: int, body: ActorBody, db: Session = Depends(get_db
 
     # Both confirmed → advance to RETURNED
     if row.renter_returned and row.owner_returned:
-        ret_ts = datetime.now(timezone.utc).replace(tzinfo=None)
+        if body.return_timestamp:
+            ret_ts = body.return_timestamp.replace(tzinfo=None) if body.return_timestamp.tzinfo else body.return_timestamp
+        else:
+            ret_ts = datetime.now(timezone.utc).replace(tzinfo=None)
         row.return_timestamp = ret_ts
         row.status = STATUS_RETURNED
         # Mark equipment available again
@@ -574,6 +618,56 @@ def complete_after_late_payment(rental_id: int, db: Session = Depends(get_db)):
         _publish_change_status(
             row.id, row.equipment_id, row.renter_id, old, STATUS_COMPLETED
         )
+    except Exception:
+        pass
+    return row
+
+
+@app.post("/rental/{rental_id}/revert-to-active", response_model=RentalOut)
+def revert_to_active(rental_id: int, db: Session = Depends(get_db)):
+    """
+    Compensating action: LATE or RETURNED → ACTIVE.
+    Called by Camunda when payment-service fails to record late fee.
+    """
+    row = db.query(Rental).filter(Rental.id == rental_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Rental not found")
+    if row.status not in (STATUS_LATE, STATUS_RETURNED):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot revert from status {row.status} to ACTIVE",
+        )
+    old = row.status
+    row.status = STATUS_ACTIVE
+    db.commit()
+    db.refresh(row)
+    try:
+        _publish_change_status(row.id, row.equipment_id, row.renter_id, old, STATUS_ACTIVE)
+    except Exception:
+        pass
+    return row
+
+
+@app.post("/rental/{rental_id}/mark-completed", response_model=RentalOut)
+def mark_completed(rental_id: int, db: Session = Depends(get_db)):
+    """
+    On-time return: RETURNED → COMPLETED.
+    Called by Camunda after return-workflow determines no late fee applies.
+    """
+    row = db.query(Rental).filter(Rental.id == rental_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Rental not found")
+    if row.status != STATUS_RETURNED:
+        raise HTTPException(
+            status_code=409,
+            detail="Rental must be RETURNED to mark completed",
+        )
+    old = row.status
+    row.status = STATUS_COMPLETED
+    db.commit()
+    db.refresh(row)
+    try:
+        _publish_change_status(row.id, row.equipment_id, row.renter_id, old, STATUS_COMPLETED)
     except Exception:
         pass
     return row
