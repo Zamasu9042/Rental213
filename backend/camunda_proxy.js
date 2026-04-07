@@ -7,7 +7,7 @@
  *                                 → start Camunda rental-workflow
  *                                 → return { processInstanceKey }
  *   2. GET  /api/rentals/:key/stripe-url  → return the checkout URL (polled by frontend)
- *   3. POST /webhook/stripe     → payment-service (Kong) verifies webhook & finalizes rental
+ *   3. POST /webhook/stripe     → Stripe calls this after payment
  *                                 → finalize rental (PENDING→ACTIVE) in rental-service
  *                                 → rental-service marks equipment rented + publishes AMQP event
  *
@@ -21,12 +21,20 @@
 
 import express from "express";
 import cors from "cors";
+import Stripe from "stripe";
 
 const app  = express();
 const PORT = process.env.PORT || 3001;
 
 // ─── CORS ─────────────────────────────────────────────────────────────────────
 app.use(cors({ origin: "*" }));
+
+// ─── Stripe ───────────────────────────────────────────────────────────────────
+const stripe = process.env.STRIPE_SECRET_KEY
+  ? new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-04-10" })
+  : null;
+
+const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || "";
 
 // ─── Camunda 8 SaaS credentials ───────────────────────────────────────────────
 const CAMUNDA_CLIENT_ID     = "AQazmsVXl7idqPlY1pMGm~Zh7Gv3Lgxk";
@@ -38,9 +46,6 @@ const TOKEN_URL             = "https://login.cloud.camunda.io/oauth/token";
 
 // ─── Service URLs (injected via Docker env, fallback for local dev) ───────────
 const RENTAL_SERVICE_URL = process.env.RENTAL_SERVICE_URL || "http://localhost:8002";
-// Docker Compose sets PAYMENT_SERVICE_URL=http://payment-service:8000
-const PAYMENT_SERVICE_URL =
-  process.env.PAYMENT_SERVICE_URL || "http://127.0.0.1:8009";
 const FRONTEND_URL       = process.env.FRONTEND_URL       || "http://localhost:5173";
 
 // ─── In-memory Stripe URL store keyed by processInstanceKey ──────────────────
@@ -138,26 +143,36 @@ app.post("/api/rentals", express.json(), async (req, res) => {
     const rental = await rentalResp.json();
     const rentalId = rental.id;
 
-    // ── Step 2: Payment microservice — Stripe Checkout + DB row (report) ─────
+    // ── Step 2: Create Stripe Checkout Session ────────────────────────────────
     let stripeUrl = null;
-    const payResp = await fetch(`${PAYMENT_SERVICE_URL}/payment/payrental`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        rental_id: rentalId,
-        renter_id: Number(renterId),
-        amount: Number(totalPrice),
-        item_name: `Equipment Rental #${rentalId}`,
-      }),
-    });
-    if (!payResp.ok) {
-      const err = await payResp.json().catch(() => ({}));
-      return res.status(payResp.status).json({
-        error: err.detail || err.message || "Payment service error",
+
+    if (stripe) {
+      const amountCents = Math.round(Number(totalPrice) * 100);
+      const session = await stripe.checkout.sessions.create({
+        payment_method_types: ["card"],
+        line_items: [
+          {
+            price_data: {
+              currency: "sgd",
+              product_data: { name: `Equipment Rental #${rentalId}` },
+              unit_amount: amountCents,
+            },
+            quantity: 1,
+          },
+        ],
+        mode: "payment",
+        success_url: `${FRONTEND_URL}/confirmation?rental_id=${rentalId}`,
+        cancel_url:  `${FRONTEND_URL}/marketplace`,
+        metadata: {
+          rental_id: String(rentalId),
+          renter_id: String(renterId),
+        },
       });
+      stripeUrl = session.url;
+    } else {
+      console.warn("[Stripe] STRIPE_SECRET_KEY not set — using mock checkout URL");
+      stripeUrl = `${FRONTEND_URL}/confirmation?rental_id=${rentalId}&mock=1`;
     }
-    const payJson = await payResp.json();
-    stripeUrl = payJson.checkout_url;
 
     // ── Step 3: Start Camunda process ─────────────────────────────────────────
     const processKey = await startCamundaProcess({
@@ -199,9 +214,67 @@ app.get("/api/rentals/:processInstanceKey/stripe-url", (req, res) => {
 });
 
 /**
- * Stripe webhooks are handled by payment-service (POST /payment/webhook).
- * Kong routes /webhook/stripe → payment-service.
+ * POST /webhook/stripe
+ * Stripe calls this after checkout.session.completed.
+ * Must receive the raw body (not parsed) for signature verification.
+ *
+ * Local testing:
+ *   stripe listen --forward-to http://localhost:8000/webhook/stripe
  */
+app.post(
+  "/webhook/stripe",
+  express.raw({ type: "application/json" }),
+  async (req, res) => {
+    const sig = req.headers["stripe-signature"];
+
+    let event;
+    if (stripe && STRIPE_WEBHOOK_SECRET) {
+      try {
+        event = stripe.webhooks.constructEvent(req.body, sig, STRIPE_WEBHOOK_SECRET);
+      } catch (err) {
+        console.error("[webhook] Signature verification failed:", err.message);
+        return res.status(400).json({ error: `Webhook signature error: ${err.message}` });
+      }
+    } else {
+      // Dev mode: trust the raw body without verification
+      try {
+        event = JSON.parse(req.body.toString());
+      } catch {
+        return res.status(400).json({ error: "Invalid JSON body" });
+      }
+    }
+
+    if (event.type === "checkout.session.completed") {
+      const session  = event.data.object;
+      const rentalId = session.metadata?.rental_id;
+
+      if (!rentalId) {
+        console.warn("[webhook] checkout.session.completed missing rental_id in metadata");
+        return res.sendStatus(200);
+      }
+
+      console.log(`[webhook] Payment completed — finalizing rental ${rentalId}`);
+
+      // Finalize rental: PENDING → ACTIVE + equipment marked rented
+      try {
+        const finalizeResp = await fetch(
+          `${RENTAL_SERVICE_URL}/rental/${rentalId}/finalize-booking`,
+          { method: "POST", headers: { "Content-Type": "application/json" } }
+        );
+        if (!finalizeResp.ok) {
+          const err = await finalizeResp.json().catch(() => ({}));
+          console.error("[webhook] finalize-booking failed:", err);
+        } else {
+          console.log(`[webhook] Rental ${rentalId} finalized (ACTIVE)`);
+        }
+      } catch (err) {
+        console.error("[webhook] finalize-booking network error:", err.message);
+      }
+    }
+
+    return res.sendStatus(200);
+  }
+);
 
 // ─── Health ───────────────────────────────────────────────────────────────────
 app.get("/health", (_req, res) => res.json({ status: "ok", service: "camunda-proxy" }));
@@ -210,6 +283,6 @@ app.get("/health", (_req, res) => res.json({ status: "ok", service: "camunda-pro
 app.listen(PORT, () => {
   console.log(`Camunda proxy running on http://localhost:${PORT}`);
   console.log(`  Rental service: ${RENTAL_SERVICE_URL}`);
-  console.log(`  Payment service: ${PAYMENT_SERVICE_URL}`);
+  console.log(`  Stripe: ${stripe ? "configured" : "NOT configured (mock mode)"}`);
   console.log(`  Camunda: ${CAMUNDA_CLIENT_ID ? "configured" : "NOT configured (skip)"}`);
 });

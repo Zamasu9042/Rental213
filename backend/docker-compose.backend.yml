@@ -1,0 +1,306 @@
+# ─── docker-compose.backend.yml ───────────────────────────────────────────────
+# Starts second. All services wait for infra to be healthy.
+# Run standalone:  docker compose -f infra/docker-compose.infra.yml \
+#                                 -f backend/docker-compose.backend.yml up
+
+networks:
+  esd-net:
+    external: true   # created by infra compose
+
+volumes:
+  equipment_images: { name: esd_equipment_images }
+  damage_photos:    { name: esd_damage_photos }
+
+services:
+
+  # ── Core microservices ─────────────────────────────────────────────────────
+
+  account-service:
+    build:
+      context: ./account-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: mysql+pymysql://account:account_pass@account-db:3306/account_db
+    ports:
+      - "8006:8000"
+    depends_on:
+      account-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks: [esd-net]
+
+  equipment-service:
+    build:
+      context: ./equipment-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: mysql+pymysql://equipment:equipment_pass@equipment-db:3306/equipment_db
+    ports:
+      - "8001:8000"
+    volumes:
+      - equipment_images:/app/images
+    depends_on:
+      equipment-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks: [esd-net]
+
+  rental-service:
+    build:
+      context: ./rental-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: mysql+pymysql://rental:rental_pass@rental-db:3306/rental_db
+      EQUIPMENT_SERVICE_URL: http://equipment-service:8000
+      AMQP_HOST: rabbitmq
+      AMQP_PORT: "5672"
+      AMQP_EXCHANGE: rental_topic
+    ports:
+      - "8002:8000"
+    depends_on:
+      rental-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      equipment-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks: [esd-net]
+
+  reputation-service:
+    build:
+      context: ./reputation-microservice
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: mysql+pymysql://reputation:reputation_pass@reputation-db:3306/reputation_db
+    ports:
+      - "8003:8000"
+    depends_on:
+      reputation-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks: [esd-net]
+
+  vision-service:
+    build:
+      context: ./vision-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      GOOGLE_VISION_API_KEY: ${GOOGLE_VISION_API_KEY:-}
+    ports:
+      - "8005:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks: [esd-net]
+
+  damage-claim-service:
+    build:
+      context: ./damage-claim-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: mysql+pymysql://damage:damage_pass@damage-db:3306/damage_claims_db
+      VISION_SERVICE_URL: http://vision-service:8000
+      DAMAGE_PUBLIC_BASE: http://damage-claim-service:8000
+    volumes:
+      - damage_photos:/data/photos
+    ports:
+      - "8004:8000"
+    depends_on:
+      damage-db:
+        condition: service_healthy
+      vision-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks: [esd-net]
+
+  notification-service:
+    build:
+      context: ./notification-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      AMQP_HOST: rabbitmq
+      AMQP_PORT: "5672"
+      AMQP_EXCHANGE: rental_topic
+      NOTIFICATION_QUEUE: notification_SendPaymentConfirmation
+    ports:
+      - "8007:8000"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      amqp-setup:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+    networks: [esd-net]
+  # ── Camunda Workers ────────────────────────────────────────────────────────────
+# Add these services to the bottom of docker-compose.backend.yml
+# They all share the same Docker image but run different worker scripts.
+
+  worker-account:
+    build:
+      context: ./workers
+      dockerfile: Dockerfile.workers
+    command: python worker_account.py
+    restart: unless-stopped
+    environment:
+      CAMUNDA_CLIENT_ID: ${CAMUNDA_CLIENT_ID}
+      CAMUNDA_CLIENT_SECRET: ${CAMUNDA_CLIENT_SECRET}
+      CAMUNDA_CLUSTER_ID: ${CAMUNDA_CLUSTER_ID}
+      CAMUNDA_REGION: ${CAMUNDA_REGION:-sin-2}
+      ACCOUNT_SERVICE_URL: http://account-service:8000
+    depends_on:
+      account-service:
+        condition: service_healthy
+    networks: [esd-net]
+
+  worker-rental:
+    build:
+      context: ./workers
+      dockerfile: Dockerfile.workers
+    command: python worker_rental.py
+    restart: unless-stopped
+    environment:
+      CAMUNDA_CLIENT_ID: ${CAMUNDA_CLIENT_ID}
+      CAMUNDA_CLIENT_SECRET: ${CAMUNDA_CLIENT_SECRET}
+      CAMUNDA_CLUSTER_ID: ${CAMUNDA_CLUSTER_ID}
+      CAMUNDA_REGION: ${CAMUNDA_REGION:-sin-2}
+      RENTAL_SERVICE_URL: http://rental-service:8000
+    depends_on:
+      rental-service:
+        condition: service_healthy
+    networks: [esd-net]
+
+  worker-equipment:
+    build:
+      context: ./workers
+      dockerfile: Dockerfile.workers
+    command: python worker_equipment.py
+    restart: unless-stopped
+    environment:
+      CAMUNDA_CLIENT_ID: ${CAMUNDA_CLIENT_ID}
+      CAMUNDA_CLIENT_SECRET: ${CAMUNDA_CLIENT_SECRET}
+      CAMUNDA_CLUSTER_ID: ${CAMUNDA_CLUSTER_ID}
+      CAMUNDA_REGION: ${CAMUNDA_REGION:-sin-2}
+      EQUIPMENT_SERVICE_URL: http://equipment-service:8000
+    depends_on:
+      equipment-service:
+        condition: service_healthy
+    networks: [esd-net]
+
+  worker-stripe:
+    build:
+      context: ./workers
+      dockerfile: Dockerfile.workers
+    command: python worker_stripe.py
+    restart: unless-stopped
+    environment:
+      CAMUNDA_CLIENT_ID: ${CAMUNDA_CLIENT_ID}
+      CAMUNDA_CLIENT_SECRET: ${CAMUNDA_CLIENT_SECRET}
+      CAMUNDA_CLUSTER_ID: ${CAMUNDA_CLUSTER_ID}
+      CAMUNDA_REGION: ${CAMUNDA_REGION:-sin-2}
+    networks: [esd-net]
+
+  worker-rabbitmq:
+    build:
+      context: ./workers
+      dockerfile: Dockerfile.workers
+    command: python worker_rabbitmq.py
+    restart: unless-stopped
+    environment:
+      CAMUNDA_CLIENT_ID: ${CAMUNDA_CLIENT_ID}
+      CAMUNDA_CLIENT_SECRET: ${CAMUNDA_CLIENT_SECRET}
+      CAMUNDA_CLUSTER_ID: ${CAMUNDA_CLUSTER_ID}
+      CAMUNDA_REGION: ${CAMUNDA_REGION:-sin-2}
+      AMQP_HOST: rabbitmq
+      AMQP_PORT: "5672"
+      AMQP_EXCHANGE: rental_topic
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks: [esd-net]
+
+  # ── Stripe payment wrapper ─────────────────────────────────────────────────
+
+  payment-wrapper:
+    build:
+      context: ./payment-wrapper
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+    ports:
+      - "8008:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks: [esd-net]
+
+  # ── Camunda orchestration proxy ────────────────────────────────────────────
+  # Handles: POST /api/rentals (create rental + Stripe Checkout + start workflow)
+  #          GET  /api/rentals/:key/stripe-url
+  #          POST /webhook/stripe (Stripe webhook → finalize rental)
+
+  camunda-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile.proxy
+    restart: unless-stopped
+    environment:
+      PORT: "3001"
+      CAMUNDA_CLIENT_ID: ${CAMUNDA_CLIENT_ID}
+      CAMUNDA_CLIENT_SECRET: ${CAMUNDA_CLIENT_SECRET}
+      CAMUNDA_CLUSTER_ID: ${CAMUNDA_CLUSTER_ID}
+      CAMUNDA_REGION: ${CAMUNDA_REGION:-sin-2}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
+      RENTAL_SERVICE_URL: http://rental-service:8000
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+    ports:
+      - "3001:3001"
+    depends_on:
+      rental-service:
+        condition: service_healthy
+    networks: [esd-net]

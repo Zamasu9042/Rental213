@@ -1,4 +1,3 @@
-import base64
 import os
 import uuid
 from datetime import datetime, timezone
@@ -20,6 +19,10 @@ app = FastAPI(title="Damage Claim Service")
 create_tables()
 
 PHOTO_DIR = Path(os.getenv("PHOTO_STORAGE_DIR", "/data/photos"))
+# Used internally (Docker network) so Vision service can reach photos when real API key is set
+DAMAGE_PUBLIC_BASE = os.getenv(
+    "DAMAGE_PUBLIC_BASE", "http://damage-claim-service:8000"
+).rstrip("/")
 
 VISION_URL = os.getenv("VISION_SERVICE_URL", "http://vision-service:8000").rstrip("/")
 
@@ -129,21 +132,15 @@ def analyze_claim(body: AnalyzeBody, db: Session = Depends(get_db)):
     if not photo:
         raise HTTPException(status_code=400, detail="Upload a photo before analyze")
 
-    # Google Vision imageUri must be public; Docker-internal URLs fail. Send bytes as base64 instead.
-    vision_json: dict[str, str]
+    # Build internal URL for Vision API (Docker-internal, works even without public access)
     if photo.startswith("/damage/files/"):
-        fname = photo.split("/damage/files/", 1)[-1]
-        dest = PHOTO_DIR / fname
-        if not dest.is_file():
-            raise HTTPException(status_code=400, detail="Photo file missing on disk")
-        b64 = base64.b64encode(dest.read_bytes()).decode("ascii")
-        vision_json = {"image_base64": b64}
+        image_url = f"{DAMAGE_PUBLIC_BASE}{photo}"
     else:
-        vision_json = {"image_url": photo}
+        image_url = photo
 
     try:
         with httpx.Client(base_url=VISION_URL, timeout=60.0) as client:
-            r = client.post("/vision/analyze", json=vision_json)
+            r = client.post("/vision/analyze", json={"image_url": image_url})
             if r.status_code >= 400:
                 raise HTTPException(
                     status_code=502, detail=f"Vision service error: {r.text}"
@@ -201,20 +198,6 @@ def resolve_claim(claim_id: str, body: ResolveBody, db: Session = Depends(get_db
         raise HTTPException(status_code=400, detail="action must be 'approve' or 'reject'")
     db.commit()
     db.refresh(row)
-    return _row_to_api(row)
-
-
-@app.get("/damage/rental/{rental_id}")
-def get_claim_by_rental(rental_id: int, db: Session = Depends(get_db)):
-    """Get the most recent damage claim for a rental (owner view)."""
-    row = (
-        db.query(DamageClaim)
-        .filter(DamageClaim.rental_id == rental_id)
-        .order_by(DamageClaim.created_at.desc())
-        .first()
-    )
-    if not row:
-        raise HTTPException(status_code=404, detail="No claim found for this rental")
     return _row_to_api(row)
 
 
