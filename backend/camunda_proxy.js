@@ -15,17 +15,26 @@
  *                            calling payment-service)
  *
  *   3. POST /webhook/stripe → Stripe calls this after payment
- *                           → tells payment-service to finalize rental
+ *                           → verifies signature here, then forwards the raw
+ *                             event to payment-service/payment/internal-webhook
+ *                             (no re-verification needed there)
  *
  * The KEY difference from before:
  *   - Proxy NO LONGER creates the rental itself
  *   - Proxy NO LONGER creates the Stripe session itself
  *   - Camunda workers do all of that
  *   - Proxy just starts the process and returns processInstanceKey
+ *
+ * FIXES applied vs original:
+ *   1. Added: import Stripe from "stripe"  (was missing — ReferenceError on startup)
+ *   2. Webhook now forwards to /payment/internal-webhook instead of /payment/webhook
+ *      to avoid double signature verification (proxy verifies; payment-service trusts)
  */
 
 import express from "express";
 import cors from "cors";
+// FIX 1: Stripe must be imported — it is a class, not a global.
+import Stripe from "stripe";
 
 const app  = express();
 const PORT = process.env.PORT || 3001;
@@ -35,6 +44,7 @@ app.use(cors({ origin: "*" }));
 // ─── Stripe (for webhook verification only) ───────────────────────────────────
 const STRIPE_SECRET_KEY     = process.env.STRIPE_SECRET_KEY     || "";
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || "";
+// FIX 1 (continued): new Stripe(...) now works because the import exists above.
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-04-10" }) : null;
 
 // ─── Service URLs ─────────────────────────────────────────────────────────────
@@ -42,9 +52,9 @@ const PAYMENT_SERVICE_URL = process.env.PAYMENT_SERVICE_URL || "http://payment-s
 const FRONTEND_URL        = process.env.FRONTEND_URL        || "http://localhost:5173";
 
 // ─── Camunda credentials ──────────────────────────────────────────────────────
-const CAMUNDA_CLIENT_ID     = process.env.CAMUNDA_CLIENT_ID     || "AQazmsVXl7idqPlY1pMGm~Zh7Gv3Lgxk";
-const CAMUNDA_CLIENT_SECRET = process.env.CAMUNDA_CLIENT_SECRET || "uH0.fzO7HfUxQ0FTlEe0DsBRe-WVgbxIq_BD0H8rpw422I.1Ig.jGZ~9JVZiU0R8";
-const CAMUNDA_CLUSTER_ID    = process.env.CAMUNDA_CLUSTER_ID    || "db920878-5333-4352-b103-0803eb907686";
+const CAMUNDA_CLIENT_ID     = process.env.CAMUNDA_CLIENT_ID     || "";
+const CAMUNDA_CLIENT_SECRET = process.env.CAMUNDA_CLIENT_SECRET || "";
+const CAMUNDA_CLUSTER_ID    = process.env.CAMUNDA_CLUSTER_ID    || "";
 const CAMUNDA_REGION        = process.env.CAMUNDA_REGION        || "sin-2";
 const CAMUNDA_BASE_URL      = `https://${CAMUNDA_REGION}.zeebe.camunda.io:443/${CAMUNDA_CLUSTER_ID}/v2`;
 const TOKEN_URL             = "https://login.cloud.camunda.io/oauth/token";
@@ -170,8 +180,14 @@ app.get("/api/rentals", (_req, res) => res.json([]));
 
 /**
  * POST /webhook/stripe
- * Stripe calls this after checkout.session.completed.
- * Forwards to payment-service to finalize the rental.
+ * Stripe CLI forwards events here after checkout.session.completed.
+ *
+ * This proxy is the ONLY place that verifies the Stripe signature.
+ * Once verified, the raw event JSON is forwarded to payment-service via
+ * POST /payment/internal-webhook — a trusted internal endpoint that skips
+ * re-verification (re-verifying against re-serialised JSON would always fail).
+ *
+ * FIX 2: changed forwarding target from /payment/webhook → /payment/internal-webhook
  */
 app.post(
   "/webhook/stripe",
@@ -182,12 +198,14 @@ app.post(
 
     if (stripe && STRIPE_WEBHOOK_SECRET) {
       try {
+        // Signature verified against the original raw bytes — correct.
         event = stripe.webhooks.constructEvent(req.body, sig, STRIPE_WEBHOOK_SECRET);
       } catch (err) {
         console.error("[webhook] Signature verification failed:", err.message);
         return res.status(400).json({ error: `Webhook error: ${err.message}` });
       }
     } else {
+      // Dev / no-Stripe mode: parse JSON directly
       try { event = JSON.parse(req.body.toString()); }
       catch { return res.status(400).json({ error: "Invalid JSON" }); }
     }
@@ -200,11 +218,12 @@ app.post(
       if (rentalId) {
         console.log(`[webhook] Payment completed — finalizing rental ${rentalId}`);
         try {
+          // FIX 2: forward to /payment/internal-webhook (trusted, no re-verification).
           const r = await fetch(
-            `${PAYMENT_SERVICE_URL}/payment/webhook`,
+            `${PAYMENT_SERVICE_URL}/payment/internal-webhook`,
             {
               method: "POST",
-              headers: { "Content-Type": "application/json", "stripe-signature": sig || "" },
+              headers: { "Content-Type": "application/json" },
               body: JSON.stringify(event),
             }
           );

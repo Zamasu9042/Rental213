@@ -288,39 +288,48 @@ def create_rental(payload: RentalCreate, db: Session = Depends(get_db)):
 
 @app.post("/rental/{rental_id}/finalize-booking", response_model=RentalOut)
 def finalize_booking_after_payment(rental_id: int, db: Session = Depends(get_db)):
-    """After payment (Camunda / OutSystems): PENDING -> ACTIVE and mark equipment rented."""
+    """
+    Called by payment-service after Stripe checkout.session.completed.
+    Transitions rental: PENDING → ACTIVE.
+
+    FIX: removed the equipment availability guard that was here before.
+    The Camunda workflow runs update-equipment-status (marks equipment → "rented")
+    BEFORE the Stripe webhook fires finalize-booking. The old guard checked
+    equipment.status == "available" and returned 409 when it found "rented",
+    so the rental was permanently stuck at PENDING even after successful payment.
+
+    The equipment was already correctly marked "rented" by worker_equipment.py,
+    so there is nothing to do here for equipment status — we just advance the rental.
+    If the equipment is somehow not in "rented" state, we still mark the rental
+    ACTIVE (payment is confirmed; equipment state is secondary and should not block).
+    """
     row = db.query(Rental).filter(Rental.id == rental_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="Rental not found")
+
+    # Idempotency: if already ACTIVE (e.g. webhook fired twice), return as-is.
+    if row.status == STATUS_ACTIVE:
+        return row
+
     if row.status != STATUS_PENDING:
         raise HTTPException(
             status_code=409,
-            detail="Rental is not awaiting payment (expected PENDING)",
-        )
-    with _equipment_client() as client:
-        try:
-            eq = _fetch_equipment(client, row.equipment_id)
-        except httpx.RequestError as exc:
-            raise HTTPException(
-                status_code=502, detail="Cannot reach equipment service"
-            ) from exc
-    if (eq.get("status") or "").lower() != "available":
-        raise HTTPException(
-            status_code=409,
-            detail="Equipment is no longer available; cannot finalize booking",
+            detail=f"Rental is not awaiting payment (expected PENDING, got {row.status})",
         )
 
     row.status = STATUS_ACTIVE
     db.commit()
     db.refresh(row)
 
-    with _equipment_client() as client:
-        try:
-            _put_equipment(client, row.equipment_id, {"status": "rented"})
-        except httpx.RequestError as exc:
-            raise HTTPException(
-                status_code=502, detail="Cannot reach equipment service for checkout"
-            ) from exc
+    # Best-effort: ensure equipment is marked rented (worker_equipment.py should
+    # have done this already, but this acts as a safety net).
+    try:
+        with _equipment_client() as client:
+            eq = _fetch_equipment(client, row.equipment_id)
+            if (eq.get("status") or "").lower() != "rented":
+                _put_equipment(client, row.equipment_id, {"status": "rented"})
+    except Exception:
+        pass  # Do not fail the booking finalization over equipment status sync
 
     try:
         _publish_change_status(
@@ -441,9 +450,7 @@ def confirm_return(rental_id: int, body: ActorBody, db: Session = Depends(get_db
     if row.status != STATUS_COLLECTED:
         raise HTTPException(status_code=409, detail="Rental must be COLLECTED to confirm return")
 
-    # Determine actor — must be renter or owner (owner looked up via equipment)
     is_renter = body.account_id == row.renter_id
-    # For owner check we need equipment owner_id — fetch from equipment service
     is_owner = False
     try:
         with _equipment_client() as client:
@@ -465,7 +472,6 @@ def confirm_return(rental_id: int, body: ActorBody, db: Session = Depends(get_db
         ret_ts = datetime.now(timezone.utc).replace(tzinfo=None)
         row.return_timestamp = ret_ts
         row.status = STATUS_RETURNED
-        # Mark equipment available again
         try:
             with _equipment_client() as client:
                 _put_equipment(client, row.equipment_id, {"status": "available"})

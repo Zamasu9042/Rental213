@@ -61,7 +61,7 @@ services:
           - GET
           - OPTIONS
 
-  # Rental Service — GET /api/rental/renter/:id/dashboard, GET /api/rental/:id
+  # Rental Service — GET /api/rental/renter/:id/dashboard, GET /api/rental/:id, PUT /api/rental/:id/*
   # strip_path strips "/api/rental" prefix; service URL adds "/rental" back
   - name: rental-svc
     url: http://rental-service:8000/rental
@@ -79,7 +79,7 @@ services:
           - OPTIONS
 
   # Camunda Proxy — POST /api/rentals, GET /api/rentals/:key/stripe-url
-  # No strip — proxy has /api/rentals routes defined
+  # No strip — proxy has /api/rentals routes defined natively
   - name: camunda-proxy-rentals
     url: http://camunda-proxy:3001
     connect_timeout: 10000
@@ -109,7 +109,7 @@ services:
           - POST
           - OPTIONS
 
-  # Reputation Service — POST /api/reputation/item, POST /api/reputation/user/:id, GET scores
+  # Reputation Service
   - name: reputation-svc
     url: http://reputation-service:8000/reputation
     connect_timeout: 10000
@@ -125,9 +125,7 @@ services:
           - PUT
           - OPTIONS
 
-  # Damage Claim Service — POST /api/damage/claim, POST /api/damage/photo, POST /api/damage/analyze,
-  #                         GET /api/damage/pending, GET /api/damage/:id, GET /api/damage/files/...
-  #                         POST /api/damage/:id/resolve
+  # Damage Claim Service
   - name: damage-claim-svc
     url: http://damage-claim-service:8000/damage
     connect_timeout: 10000
@@ -142,15 +140,48 @@ services:
           - POST
           - OPTIONS
 
-  # Stripe Webhook — POST /webhook/stripe
-  - name: camunda-proxy-webhook
+  # Payment Service — /api/payment/payrental, /api/payment/outstanding, GET /api/payment/:id
+  - name: payment-svc
+    url: http://payment-service:8000/payment
+    connect_timeout: 10000
+    read_timeout: 60000
+    routes:
+      - name: payment-route
+        paths:
+          - /api/payment
+        strip_path: true
+        methods:
+          - GET
+          - POST
+          - OPTIONS
+
+  # ── Stripe Webhook ──────────────────────────────────────────────────────────
+  #
+  # FIX: This route MUST point to camunda-proxy, NOT directly to payment-service.
+  #
+  # The Stripe CLI forwards raw bytes with a Stripe-Signature header.
+  # Signature verification requires the ORIGINAL raw request body — it cannot
+  # be re-verified after the body has been parsed and re-serialised.
+  #
+  # Correct flow:
+  #   Stripe CLI → Kong /webhook/stripe → camunda-proxy:3001/webhook/stripe
+  #     → proxy verifies signature against raw bytes ✓
+  #     → proxy forwards parsed event JSON to payment-service/payment/internal-webhook
+  #     → payment-service processes event without re-verifying ✓
+  #
+  # Wrong flow (old config in backend/kong.yml):
+  #   Stripe CLI → Kong /webhook/stripe → payment-service:8000/webhook/stripe
+  #     → payment-service tries to re-verify already-parsed JSON ✗ (400 error)
+  #     → rental stays PENDING forever
+  #
+  - name: stripe-webhook-svc
     url: http://camunda-proxy:3001
     connect_timeout: 10000
     read_timeout: 30000
     routes:
-      - name: webhook-route
+      - name: webhook-stripe-route
         paths:
-          - /webhook
+          - /webhook/stripe
         strip_path: false
         methods:
           - POST

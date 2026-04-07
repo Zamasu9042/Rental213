@@ -1,27 +1,619 @@
-# Rental213 — P2P Equipment Rental (IS213 G3-T2)
+# Rental213 — P2P Equipment Rental Platform
 
-## Documentation (report, appendix, diagrams)
+A microservices-based peer-to-peer equipment rental platform built with React, FastAPI, Node.js, Kong, RabbitMQ, Stripe, and Camunda 8.
 
-All course documentation is under **`docs/`**. Start here: **[`docs/README.md`](docs/README.md)**
+---
 
-| Deliverable | File |
-|-------------|------|
-| Report main body (draft) | [`docs/IS213_Report_Main_Body_Draft.md`](docs/IS213_Report_Main_Body_Draft.md) |
-| API appendix | [`docs/API_Appendix_Full.md`](docs/API_Appendix_Full.md) |
-| Mermaid diagrams | [`docs/Diagrams_Mermaid_All.md`](docs/Diagrams_Mermaid_All.md) |
-| BTL text | [`docs/BTL_Justifications.md`](docs/BTL_Justifications.md) |
-| Team table | [`docs/Team_Contribution_Table.md`](docs/Team_Contribution_Table.md) |
-| Demo / video script | [`docs/Demo_And_Video_Script.md`](docs/Demo_And_Video_Script.md) |
-| Requirements checklist | [`docs/REQUIREMENTS_CHECKLIST_IS213.md`](docs/REQUIREMENTS_CHECKLIST_IS213.md) |
+## Table of Contents
 
-**Video URL:** put your YouTube link in **`video.txt`** (course requirement).
+1. [Prerequisites](#1-prerequisites)
+2. [External Services Setup](#2-external-services-setup)
+   - [Camunda Cloud](#21-camunda-cloud)
+   - [Stripe](#22-stripe)
+   - [Twilio (SMS)](#23-twilio-sms)
+3. [Environment Configuration — what to change](#3-environment-configuration--what-to-change)
+4. [Running the Application](#4-running-the-application)
+5. [Stripe CLI Webhook Setup](#5-stripe-cli-webhook-setup)
+   - [macOS](#macos)
+   - [Windows](#windows)
+6. [Demo Accounts](#6-demo-accounts)
+7. [Making a Test Payment](#7-making-a-test-payment)
+8. [Logs & Debugging Reference](#8-logs--debugging-reference)
+   - [Checking all service logs](#checking-all-service-logs)
+   - [Camunda-specific logs](#camunda-specific-logs)
+   - [Stripe webhook logs](#stripe-webhook-logs)
+   - [Testing connections manually](#testing-connections-manually)
+9. [Service URLs](#9-service-urls)
+10. [Stopping the Application](#10-stopping-the-application)
+11. [Troubleshooting](#11-troubleshooting)
+12. [Project Structure](#12-project-structure)
 
-## Quick run (development)
+---
 
-1. **Backend:** from `backend/`, run Docker Compose (see `backend/compose.yaml`). Kong listens on **8000**.
-2. **Frontend:** from `frontend/`, `npm install` && `npm run dev` (Vite proxies `/api` to Kong).
+## 1. Prerequisites
 
-## Repositories layout
+Install the following before you begin:
 
-- `frontend/` — React + Vite SPA  
-- `backend/` — Microservices, Kong, Compose, camunda-proxy  
+| Tool | Download | Notes |
+|------|----------|-------|
+| **Docker Desktop** | https://www.docker.com/products/docker-desktop | Required for all services |
+| **Stripe CLI** | https://stripe.com/docs/stripe-cli | Required for webhook forwarding |
+| **Git** | https://git-scm.com | To clone the repo |
+| **Node.js 20+** | https://nodejs.org | Only needed if running frontend outside Docker |
+
+---
+
+## 2. External Services Setup
+
+### 2.1 Camunda Cloud
+
+Camunda orchestrates the rental workflow — it sequences the account lookup, payment initiation, equipment status update, and notification steps.
+
+1. Go to **https://camunda.io** and sign up or log in
+2. Create a new **cluster**:
+   - Name: anything (e.g. `retalCluster`)
+   - Region: **Singapore (sin-2)**
+   - Plan: Trial is fine
+3. Wait for cluster status to show 🟢 **Healthy** (takes ~2 minutes)
+4. Go to your cluster → **API** tab → click **Create new credentials**
+5. Copy these four values — you will need them for `.env`:
+   - `Client ID`
+   - `Client Secret`
+   - `Cluster ID`
+   - `Region` (should be `sin-2`)
+6. Deploy the BPMN workflow to your cluster:
+   - Open **Camunda Web Modeler** from the console
+   - Upload and deploy `rental-workflow.bpmn` from the `backend/` folder
+
+> **Note:** Trial clusters auto-pause after ~30 minutes of inactivity. If workers start failing, go to camunda.io, find your cluster, and click **Resume**.
+
+---
+
+### 2.2 Stripe
+
+Stripe handles all payment processing. The app runs in **test mode** — no real money is charged.
+
+1. Go to **https://dashboard.stripe.com** and sign up or log in
+2. Make sure you are in **Test mode** (toggle in the top-right corner)
+3. Go to **Developers → API Keys**
+4. Copy your **Secret key** — it starts with `sk_test_...`
+5. You do **not** need to set up the webhook secret manually — the Stripe CLI generates it for you (see [Section 5](#5-stripe-cli-webhook-setup))
+
+---
+
+### 2.3 Twilio (SMS)
+
+Twilio sends payment confirmation SMS messages to renters.
+
+1. Go to **https://console.twilio.com** and sign up or log in
+2. From the dashboard copy:
+   - **Account SID** — starts with `AC...`
+   - **Auth Token** — found on the main dashboard
+3. Get a Twilio phone number:
+   - Go to **Phone Numbers → Manage → Buy a number**
+   - Copy the number in E.164 format (e.g. `+13613211427`)
+
+> **Note:** SMS is optional for the core flow. If Twilio is not configured, the app still works — it just skips sending the SMS.
+
+---
+
+## 3. Environment Configuration — what to change
+
+Copy the example file first:
+
+```bash
+cp .env.example .env
+```
+
+Then open `.env` and update each section:
+
+### Stripe keys
+```env
+# Your Stripe secret key from dashboard.stripe.com → Developers → API Keys
+STRIPE_SECRET_KEY=sk_test_REPLACE_WITH_YOUR_KEY
+
+# Generated by Stripe CLI when you run `stripe listen` (see Section 5)
+# Leave this blank until you run the CLI — it will print the value for you
+STRIPE_WEBHOOK_SECRET=whsec_REPLACE_AFTER_RUNNING_STRIPE_CLI
+```
+
+### Camunda keys
+```env
+# All four values come from camunda.io → your cluster → API tab → Create credentials
+CAMUNDA_CLIENT_ID=REPLACE_WITH_YOUR_CLIENT_ID
+CAMUNDA_CLIENT_SECRET=REPLACE_WITH_YOUR_CLIENT_SECRET
+CAMUNDA_CLUSTER_ID=REPLACE_WITH_YOUR_CLUSTER_ID
+
+# Change this only if your cluster is in a different region
+CAMUNDA_REGION=sin-2
+```
+
+### Twilio keys
+```env
+# From console.twilio.com dashboard
+TWILIO_ACCOUNT_SID=REPLACE_WITH_YOUR_ACCOUNT_SID
+TWILIO_AUTH_TOKEN=REPLACE_WITH_YOUR_AUTH_TOKEN
+
+# Your Twilio phone number in E.164 format
+TWILIO_FROM_NUMBER=+REPLACE_WITH_YOUR_TWILIO_NUMBER
+```
+
+### Other keys
+```env
+# Optional — for AI damage claim analysis. Leave blank to skip.
+GOOGLE_VISION_API_KEY=REPLACE_OR_LEAVE_BLANK
+
+# Do not change this for local development
+FRONTEND_URL=http://localhost:5173
+```
+
+---
+
+## 4. Running the Application
+
+1. Make sure **Docker Desktop** is open and running
+
+2. From the project root, build and start everything:
+   ```bash
+   docker compose up --build
+   ```
+
+3. First boot takes **2–3 minutes** — Docker is building images and waiting for databases to become healthy. You will know it is ready when you see:
+   ```
+   frontend-1        |   ➜  Local:   http://localhost:5173/
+   camunda-proxy-1   | Camunda proxy running on http://localhost:3001
+   ```
+
+4. **Open a second terminal** and set up the Stripe CLI webhook (see Section 5 — this is required for payments to work)
+
+---
+
+## 5. Stripe CLI Webhook Setup
+
+> **This step must be run every time you start the application.** Without it, Stripe payments will complete successfully but rentals will stay stuck on "Pending Payment" forever because the webhook confirmation never arrives.
+
+### macOS
+
+**Install the Stripe CLI** (if not already installed):
+```bash
+brew install stripe/stripe-cli/stripe
+```
+
+**Log in to Stripe** (first time only):
+```bash
+stripe login
+```
+A browser window opens — authorise it with your Stripe account.
+
+**Start webhook forwarding:**
+```bash
+stripe listen --forward-to http://localhost:3001/webhook/stripe
+```
+
+You will see:
+```
+> Ready! Your webhook signing secret is whsec_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx (^C to quit)
+```
+
+**Copy the `whsec_...` value** and paste it into your `.env`:
+```env
+STRIPE_WEBHOOK_SECRET=whsec_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+Then restart the proxy and payment service so they pick up the new secret:
+```bash
+docker compose restart camunda-proxy payment-service
+```
+
+Keep this terminal open while testing — closing it stops webhook forwarding.
+
+---
+
+### Windows
+
+**Install the Stripe CLI:**
+
+Option A — using Scoop:
+```powershell
+scoop bucket add stripe https://github.com/stripe/scoop-stripe-cli.git
+scoop install stripe
+```
+
+Option B — download directly:
+1. Go to https://github.com/stripe/stripe-cli/releases/latest
+2. Download `stripe_X.X.X_windows_x86_64.zip`
+3. Extract `stripe.exe` to a folder that is in your `PATH` (e.g. `C:\Windows\System32` or add the folder to System Environment Variables)
+
+**Log in to Stripe** (first time only — run in Command Prompt or PowerShell):
+```powershell
+stripe login
+```
+A browser window opens — authorise it with your Stripe account.
+
+**Start webhook forwarding:**
+```powershell
+stripe listen --forward-to http://localhost:3001/webhook/stripe
+```
+
+You will see:
+```
+> Ready! Your webhook signing secret is whsec_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx (^C to quit)
+```
+
+**Copy the `whsec_...` value** and paste it into your `.env`:
+```env
+STRIPE_WEBHOOK_SECRET=whsec_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+Then restart the proxy and payment service:
+```powershell
+docker compose restart camunda-proxy payment-service
+```
+
+Keep this terminal open while testing.
+
+---
+
+## 6. Demo Accounts
+
+These accounts are seeded automatically on first boot. Password for all accounts is `password123`.
+
+| Email | Password | Role | ID | Notes |
+|-------|----------|------|----|-------|
+| `renter@test.com` | `password123` | Renter | 1001 | Has existing rentals in various states |
+| `owner@test.com` | `password123` | Owner | 1002 | Owns all seeded equipment |
+| `staff@test.com` | `password123` | Staff | 1003 | Can review damage claims |
+| `renter2check@gmail.com` | `password123` | Renter | 1004 | Clean account — best for testing new bookings |
+
+> **Tip:** Use `renter2check@gmail.com` to test the full payment flow from scratch — it has no outstanding rentals or blocking payments.
+
+---
+
+## 7. Making a Test Payment
+
+Use Stripe's test card on the checkout page — no real money is charged:
+
+| Field | Value |
+|-------|-------|
+| Card number | `4242 4242 4242 4242` |
+| Expiry date | Any future date (e.g. `12/28`) |
+| CVC | Any 3 digits (e.g. `123`) |
+| Name | Any name |
+| Billing address | Any address |
+
+After a successful payment you should see in the Stripe CLI terminal:
+```
+--> checkout.session.completed [evt_xxx]
+<-- [200] POST http://localhost:3001/webhook/stripe [evt_xxx]
+```
+
+And the rental status will change from **Pending Payment** → **Awaiting pickup** in My Rentals.
+
+---
+
+## 8. Logs & Debugging Reference
+
+### Checking all service logs
+
+```bash
+# Stream all services at once
+docker compose logs -f
+
+# Stream specific services (most useful combination for the payment flow)
+docker compose logs -f camunda-proxy worker-initiate-payment payment-service rental-service
+
+# Last 50 lines of a specific service without streaming
+docker compose logs --tail=50 camunda-proxy
+```
+
+---
+
+### Camunda-specific logs
+
+```bash
+# See if the proxy authenticated with Camunda and started process instances
+docker compose logs -f camunda-proxy
+
+# See if worker picked up a job and what happened
+docker compose logs -f worker-initiate-payment
+
+# See all worker logs at once
+docker compose logs -f worker-account worker-equipment worker-initiate-payment worker-rabbitmq
+```
+
+**What to look for:**
+
+| Log message | Meaning |
+|-------------|---------|
+| `Camunda proxy running on http://localhost:3001` | Proxy started OK |
+| `[proxy] Camunda process started: key=XXXX` | Process instance created in Camunda ✓ |
+| `Worker started: initiate-payment` | Worker connected to Camunda and is polling ✓ |
+| `[initiate-payment] Starting — renterId=...` | Camunda dispatched a job to the worker ✓ |
+| `[initiate-payment] Stripe URL registered OK` | Full flow completed — Stripe session created ✓ |
+| `Camunda token fetch failed` | Wrong credentials in `.env` or can't reach Camunda Cloud |
+| `gRPC error` / `UNAVAILABLE` | Camunda cluster is paused — go to camunda.io and resume it |
+| `404 Not Found for url .../account/X` | Account ID doesn't exist — make sure you're logged in as a seeded account |
+| `process definition not found` | BPMN `rental-workflow` not deployed to your Camunda cluster |
+
+**Test Camunda credentials directly (no Docker needed):**
+```bash
+curl -s -X POST https://login.cloud.camunda.io/oauth/token \
+  -d "grant_type=client_credentials" \
+  -d "client_id=YOUR_CLIENT_ID" \
+  -d "client_secret=YOUR_CLIENT_SECRET" \
+  -d "audience=zeebe.camunda.io"
+```
+If you get back a JSON with `"access_token":"eyJ..."` — credentials are valid ✓
+If you get `"error":"unauthorized"` — credentials are wrong, regenerate them from camunda.io.
+
+**Check the proxy health endpoint (tests live token fetch):**
+```bash
+curl http://localhost:3001/health
+```
+Returns `"camunda":"connected"` if authentication is working, or `"camunda":"error"` with the error message if not.
+
+---
+
+### Stripe webhook logs
+
+```bash
+# See if the webhook arrived at the proxy and was forwarded to payment-service
+docker compose logs -f camunda-proxy
+
+# See if payment-service processed the webhook and called finalize-booking
+docker compose logs -f payment-service
+```
+
+**What to look for:**
+
+| Log message | Meaning |
+|-------------|---------|
+| `[webhook] Payment completed — finalizing rental X` | Webhook arrived at proxy ✓ |
+| `[webhook] Payment service notified OK` | Payment service processed it ✓ |
+| `[webhook] Signature verification failed` | `STRIPE_WEBHOOK_SECRET` in `.env` doesn't match the CLI output — restart after updating |
+| `[webhook] Payment service unreachable` | `payment-service` container is not running |
+
+**In the Stripe CLI terminal, you should see:**
+```
+--> checkout.session.completed [evt_xxx]
+<-- [200] POST http://localhost:3001/webhook/stripe [evt_xxx]
+```
+A `[200]` means success. A `[400]` or `[500]` means something failed — check `docker compose logs camunda-proxy`.
+
+---
+
+### Testing connections manually
+
+**Test the full booking flow end-to-end:**
+```bash
+# 1. Start a process instance (replace equipmentId/renterId with real values)
+curl -s -X POST http://localhost:3001/api/rentals \
+  -H "Content-Type: application/json" \
+  -d '{
+    "renterId": "1004",
+    "equipmentId": "1",
+    "startTime": "2026-06-01T09:00:00",
+    "endTime": "2026-06-01T17:00:00",
+    "totalPrice": 100.00,
+    "pickUpLocation": "Test"
+  }'
+
+# 2. Poll for Stripe URL (replace KEY with processInstanceKey from above)
+curl -s http://localhost:3001/api/rentals/KEY/stripe-url
+```
+
+**Check if a rental finalised correctly:**
+```bash
+# Replace RENTAL_ID with the actual ID
+curl http://localhost:8002/rental/RENTAL_ID
+# Should show "status": "ACTIVE" after successful payment
+```
+
+**Check account service is reachable:**
+```bash
+curl http://localhost:8006/account/1004
+# Should return account details for renter2
+```
+
+**Check payment service health:**
+```bash
+curl http://localhost:8009/health
+```
+
+**Check all service health endpoints at once:**
+```bash
+for port in 8001 8002 8003 8004 8005 8006 8007 8008 8009; do
+  echo -n "Port $port: "
+  curl -s http://localhost:$port/health 2>/dev/null || echo "NOT RUNNING"
+done
+```
+
+---
+
+## 9. Service URLs
+
+| URL | Service | Notes |
+|-----|---------|-------|
+| http://localhost:5173 | **Frontend** | Main application |
+| http://localhost:8000 | **Kong API Gateway** | All frontend traffic goes through here |
+| http://localhost:3001 | **Camunda Proxy** | Rental workflow orchestration |
+| http://localhost:8001 | Equipment Service | Direct access |
+| http://localhost:8002 | Rental Service | Direct access |
+| http://localhost:8003 | Reputation Service | Direct access |
+| http://localhost:8004 | Damage Claim Service | Direct access |
+| http://localhost:8005 | Vision Service | Direct access |
+| http://localhost:8006 | Account Service | Direct access |
+| http://localhost:8007 | Notification Service | Direct access |
+| http://localhost:8008 | Payment Wrapper | Direct access |
+| http://localhost:8009 | Payment Service | Direct access |
+| http://localhost:15672 | RabbitMQ Management UI | Login: `guest` / `guest` |
+| https://sin-2.operate.camunda.io | Camunda Operate | View process instances and incidents |
+
+---
+
+## 10. Stopping the Application
+
+Stop all containers (keeps database data):
+```bash
+docker compose down
+```
+
+Stop and delete all data (full reset — re-seeds on next boot):
+```bash
+docker compose down -v
+```
+
+Restart a single service (e.g. after updating `.env`):
+```bash
+docker compose restart camunda-proxy
+docker compose restart payment-service
+```
+
+Rebuild and restart a single service after code changes:
+```bash
+docker compose up --build camunda-proxy
+```
+
+---
+
+## 11. Troubleshooting
+
+### Rental stuck on "Pending Payment" after successful Stripe payment
+
+The webhook didn't reach the app. Check in order:
+
+1. Is the Stripe CLI running?
+   ```bash
+   stripe listen --forward-to http://localhost:3001/webhook/stripe
+   ```
+
+2. Does the `STRIPE_WEBHOOK_SECRET` in `.env` match what the CLI printed?
+   If you updated `.env`, restart the services:
+   ```bash
+   docker compose restart camunda-proxy payment-service
+   ```
+
+3. Check webhook logs:
+   ```bash
+   docker compose logs --tail=30 camunda-proxy payment-service
+   ```
+
+4. Manually finalize a stuck rental:
+   ```bash
+   curl -X POST http://localhost:8002/rental/RENTAL_ID/finalize-booking
+   ```
+
+---
+
+### Camunda workers failing / incidents in Operate
+
+1. Check worker logs:
+   ```bash
+   docker compose logs --tail=50 worker-initiate-payment worker-account
+   ```
+
+2. Is the cluster paused? Go to https://camunda.io → find your cluster → click **Resume**
+
+3. Once resumed, restart the workers:
+   ```bash
+   docker compose restart worker-account worker-equipment worker-initiate-payment worker-rabbitmq
+   ```
+
+4. Go to Camunda Operate → click the incident instance → click **Retry** on the failed task
+
+---
+
+### "Equipment is not available" when trying to book
+
+The equipment status is stuck as `rented` from a previous test. Reset it:
+```bash
+curl -X PUT http://localhost:8001/equipment/EQUIPMENT_ID \
+  -H "Content-Type: application/json" \
+  -d '{"status": "available"}'
+```
+
+---
+
+### Port already in use
+
+Common conflicts and how to fix them:
+
+| Port | Service | Fix |
+|------|---------|-----|
+| `5173` | Frontend | Kill other Vite instances: `lsof -ti:5173 \| xargs kill` |
+| `8000` | Kong | Stop any other service using port 8000 |
+| `5672` / `15672` | RabbitMQ | Stop any local RabbitMQ: `brew services stop rabbitmq` |
+| `3307–3312` | MySQL | Stop any local MySQL: `brew services stop mysql` |
+
+---
+
+### "No equipment available" on the marketplace
+
+The seed data didn't load. Reset the equipment database:
+```bash
+docker compose down -v
+docker compose up --build
+```
+
+---
+
+### SMS notifications not sending
+
+1. Check Twilio credentials in `.env` — all three values must be set:
+   - `TWILIO_ACCOUNT_SID`
+   - `TWILIO_AUTH_TOKEN`
+   - `TWILIO_FROM_NUMBER`
+
+2. Check notification service logs:
+   ```bash
+   docker compose logs -f notification-service
+   ```
+   Look for `Twilio not configured — skipping SMS` — this means the env vars are missing from the container. Make sure `env_file: ../.env` is present in `docker-compose.backend.yml` under `notification-service`, then restart:
+   ```bash
+   docker compose restart notification-service
+   ```
+
+---
+
+## 12. Project Structure
+
+```
+Rental213/
+├── docker-compose.yml               ← root orchestrator (starts infra → backend → frontend)
+├── .env                             ← your secrets (never commit this)
+├── .env.example                     ← template — copy to .env and fill in
+├── .gitignore
+│
+├── infra/
+│   ├── docker-compose.infra.yml     ← MySQL databases, RabbitMQ, Kong, amqp-setup
+│   ├── kong.yml                     ← Kong API Gateway declarative config
+│   └── amqp-setup/                  ← RabbitMQ exchange + queue initialiser
+│
+├── backend/
+│   ├── account-service/             ← user accounts, login, demo seed data
+│   ├── equipment-service/           ← equipment listings + image upload
+│   ├── rental-service/              ← rental lifecycle (PENDING→ACTIVE→COLLECTED→RETURNED→COMPLETED)
+│   ├── payment-service/             ← Stripe Checkout sessions + webhook handling
+│   ├── payment-wrapper/             ← Stripe PaymentIntent wrapper (used separately)
+│   ├── damage-claim-service/        ← damage claim submissions + staff review
+│   ├── notification-service/        ← RabbitMQ consumer → Twilio SMS
+│   ├── vision-service/              ← Google Vision API for damage image analysis
+│   ├── reputation-microservice/     ← ratings and reviews
+│   ├── workers/
+│   │   ├── worker_account.py        ← Camunda: get-account-info task
+│   │   ├── worker_equipment.py      ← Camunda: update-equipment-status task
+│   │   ├── worker_initiate_payment.py ← Camunda: initiate-payment task (creates rental + Stripe session)
+│   │   └── worker_rabbitmq.py       ← Camunda: publish-payment-event task
+│   ├── camunda_proxy.js             ← starts Camunda process, hosts /webhook/stripe
+│   ├── Dockerfile.proxy             ← Docker image for camunda_proxy.js
+│   └── docker-compose.backend.yml   ← all backend services + workers
+│
+└── frontend/
+    ├── src/
+    │   ├── app/pages/               ← React page components
+    │   ├── app/components/          ← shared UI components
+    │   ├── app/context/             ← AppContext (user session)
+    │   └── lib/api.ts               ← all API calls to Kong
+    ├── Dockerfile
+    └── docker-compose.frontend.yml
+```

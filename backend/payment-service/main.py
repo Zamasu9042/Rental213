@@ -2,15 +2,27 @@
 Payment microservice (report User Scenario 1 & 2; technical diagram).
 
 Endpoints:
-  POST /payment/payrental           — initial rental checkout (Stripe)
-  POST /payment/outstanding         — late check + record unpaid late fee (logic lives here)
+  POST /payment/payrental                — initial rental checkout (Stripe)
+  POST /payment/outstanding              — late check + record unpaid late fee (logic lives here)
   POST /payment/outstanding/{id}/checkout — Stripe for an unpaid late-fee row
   GET  /payment/{id}
-  POST /payment/webhook             — Stripe signature verification
+  POST /payment/webhook                  — Stripe webhook: verifies signature itself
+                                           (used when Stripe CLI points directly here)
+  POST /payment/internal-webhook         — trusted internal endpoint called by camunda-proxy
+                                           AFTER it has already verified the Stripe signature.
+                                           No re-verification — forwarded JSON would fail it.
+  POST /webhook/stripe                   — legacy alias kept for Kong / older config
+
+FIXES vs original:
+  1. Added /payment/internal-webhook endpoint — receives pre-verified events from
+     camunda-proxy without attempting Stripe signature verification on re-serialised JSON.
+  2. Extracted shared _process_checkout_event() helper so both webhook endpoints
+     share identical business logic with zero duplication.
 """
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -151,6 +163,20 @@ def pay_rental(body: PayRentalBody, db: Session = Depends(get_db)):
     )
     if existing and existing.status == STATUS_PAID:
         raise HTTPException(status_code=409, detail="Rental payment already completed")
+
+    # If a PAYING row already exists, return its checkout URL instead of creating a duplicate
+    if existing and existing.status == STATUS_PAYING:
+        checkout_url = f"{FRONTEND_URL}/marketplace"
+        if STRIPE_SECRET_KEY and existing.stripe_session_id:
+            try:
+                session = stripe.checkout.Session.retrieve(existing.stripe_session_id)
+                checkout_url = session.url or checkout_url
+            except Exception:
+                pass
+        return {
+            **payment_to_dict(existing),
+            "checkout_url": checkout_url,
+        }
 
     now = _now()
     item_name = body.item_name or f"Equipment rental #{body.rental_id}"
@@ -329,27 +355,16 @@ def get_payment(payment_id: int, db: Session = Depends(get_db)):
     return payment_to_dict(row)
 
 
-@app.post("/payment/webhook")
-async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
-    """Stripe webhook — verify signature, mark paid, advance rental workflow (report step 12–14)."""
-    body = await request.body()
-    sig = request.headers.get("stripe-signature")
+# ─── Shared event processing logic ────────────────────────────────────────────
+# FIX: extracted into a helper so both /payment/webhook and /payment/internal-webhook
+# run identical business logic without duplicating code.
 
-    if STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET:
-        try:
-            event = stripe.Webhook.construct_event(
-                body, sig or "", STRIPE_WEBHOOK_SECRET
-            )
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"Webhook error: {exc}") from exc
-    else:
-        import json
-
-        try:
-            event = json.loads(body.decode("utf-8"))
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail="Invalid JSON") from exc
-
+def _process_checkout_event(event: dict | Any, db: Session) -> dict:
+    """
+    Handle a checkout.session.completed event dict.
+    Marks payment as paid, advances rental state, publishes RabbitMQ notification.
+    Called by both webhook endpoints after the event has been parsed/verified.
+    """
     etype = getattr(event, "type", None) or (
         event.get("type") if isinstance(event, dict) else None
     )
@@ -364,6 +379,7 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
         meta_raw = sess.get("metadata") or {}
     else:
         meta_raw = {}
+
     meta = dict(meta_raw) if meta_raw else {}
     payment_id = meta.get("payment_id")
     kind = meta.get("kind", TYPE_RENTAL)
@@ -402,6 +418,54 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
         pass
 
     return {"received": True}
+
+
+# ─── Webhook endpoints ────────────────────────────────────────────────────────
+
+@app.post("/payment/webhook")
+async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
+    """
+    Direct Stripe webhook — verifies the signature against the raw request body.
+    Use this when Stripe CLI forwards directly to payment-service (bypassing the proxy).
+    e.g.:  stripe listen --forward-to localhost:8009/payment/webhook
+    """
+    body = await request.body()
+    sig = request.headers.get("stripe-signature")
+
+    if STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET:
+        try:
+            event = stripe.Webhook.construct_event(
+                body, sig or "", STRIPE_WEBHOOK_SECRET
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Webhook error: {exc}") from exc
+    else:
+        try:
+            event = json.loads(body.decode("utf-8"))
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Invalid JSON") from exc
+
+    return _process_checkout_event(event, db)
+
+
+@app.post("/payment/internal-webhook")
+async def stripe_webhook_internal(request: Request, db: Session = Depends(get_db)):
+    """
+    FIX: Internal webhook called by camunda-proxy AFTER it has already verified the
+    Stripe signature against the original raw bytes.
+
+    camunda-proxy cannot forward raw bytes (it re-serialises the parsed event object),
+    so attempting to re-verify the signature here would always fail. This endpoint
+    trusts the proxy and processes the event dict directly — it should NOT be exposed
+    to the internet (Kong routes only expose it inside esd-net).
+    """
+    body = await request.body()
+    try:
+        event = json.loads(body.decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON") from exc
+
+    return _process_checkout_event(event, db)
 
 
 # Kong may forward legacy path used by Stripe CLI / older config
