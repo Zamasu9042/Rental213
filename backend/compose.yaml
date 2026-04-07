@@ -303,8 +303,10 @@ services:
       context: ./vision-service
       dockerfile: Dockerfile
     restart: unless-stopped
-    environment:
-      GOOGLE_VISION_API_KEY: ${GOOGLE_VISION_API_KEY:-}
+    env_file:
+      - path: ../.env
+        required: false
+    environment: {}
     ports:
       - "8005:8000"
     healthcheck:
@@ -386,11 +388,15 @@ services:
       context: ./notification-service
       dockerfile: Dockerfile
     restart: unless-stopped
+    env_file:
+      - path: ../.env
+        required: false
     environment:
       AMQP_HOST: rabbitmq
       AMQP_PORT: "5672"
       AMQP_EXCHANGE: rental_topic
       NOTIFICATION_QUEUE: notification_SendPaymentConfirmation
+      ACCOUNT_SERVICE_URL: http://account-service:8000
     ports:
       - "8007:8000"
     depends_on:
@@ -398,6 +404,8 @@ services:
         condition: service_healthy
       amqp-setup:
         condition: service_completed_successfully
+      account-service:
+        condition: service_healthy
     healthcheck:
       test:
         [

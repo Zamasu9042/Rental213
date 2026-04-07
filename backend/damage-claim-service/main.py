@@ -1,3 +1,4 @@
+import base64
 import os
 import uuid
 from datetime import datetime, timezone
@@ -132,15 +133,23 @@ def analyze_claim(body: AnalyzeBody, db: Session = Depends(get_db)):
     if not photo:
         raise HTTPException(status_code=400, detail="Upload a photo before analyze")
 
-    # Build internal URL for Vision API (Docker-internal, works even without public access)
+    # Read photo from disk and send as base64 so Google Vision can access it
+    # (Docker-internal URLs are not reachable by Google's servers)
+    vision_payload_req: dict
     if photo.startswith("/damage/files/"):
-        image_url = f"{DAMAGE_PUBLIC_BASE}{photo}"
+        filename = photo.removeprefix("/damage/files/")
+        file_path = PHOTO_DIR / filename
+        if file_path.exists():
+            image_b64 = base64.b64encode(file_path.read_bytes()).decode()
+            vision_payload_req = {"image_base64": image_b64}
+        else:
+            raise HTTPException(status_code=400, detail="Photo file not found on disk")
     else:
-        image_url = photo
+        vision_payload_req = {"image_url": photo}
 
     try:
         with httpx.Client(base_url=VISION_URL, timeout=60.0) as client:
-            r = client.post("/vision/analyze", json={"image_url": image_url})
+            r = client.post("/vision/analyze", json=vision_payload_req)
             if r.status_code >= 400:
                 raise HTTPException(
                     status_code=502, detail=f"Vision service error: {r.text}"
@@ -198,6 +207,19 @@ def resolve_claim(claim_id: str, body: ResolveBody, db: Session = Depends(get_db
         raise HTTPException(status_code=400, detail="action must be 'approve' or 'reject'")
     db.commit()
     db.refresh(row)
+    return _row_to_api(row)
+
+
+@app.get("/damage/rental/{rental_id}")
+def get_claim_by_rental(rental_id: int, db: Session = Depends(get_db)):
+    row = (
+        db.query(DamageClaim)
+        .filter(DamageClaim.rental_id == rental_id)
+        .order_by(DamageClaim.created_at.desc())
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="No damage claim for this rental")
     return _row_to_api(row)
 
 

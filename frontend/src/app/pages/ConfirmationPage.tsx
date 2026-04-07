@@ -546,7 +546,7 @@ const RentalCard: React.FC<RentalCardProps> = ({
 
             {/* ── LATE ── */}
             {rental.status === 'LATE' && isRenter && (
-              <Button size="sm" variant="destructive" className="gap-1 h-8 text-xs" onClick={() => onNavigate(`/equipment/${rental.equipment_id}`)}>
+              <Button size="sm" variant="destructive" className="gap-1 h-8 text-xs" onClick={() => onNavigate(`/late-fee/${rental.id}`)}>
                 <CreditCard className="w-3 h-3" /> Pay late fee
               </Button>
             )}

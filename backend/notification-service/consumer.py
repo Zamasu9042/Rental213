@@ -4,16 +4,76 @@ import os
 import time
 from typing import Callable
 
+import httpx
 import pika
+from twilio.rest import Client as TwilioClient
 
 LOG = logging.getLogger("notification_consumer")
 
-AMQP_HOST = os.getenv("AMQP_HOST", "localhost")
-AMQP_PORT = int(os.getenv("AMQP_PORT", "5672"))
+AMQP_HOST     = os.getenv("AMQP_HOST", "localhost")
+AMQP_PORT     = int(os.getenv("AMQP_PORT", "5672"))
 AMQP_EXCHANGE = os.getenv("AMQP_EXCHANGE", "rental_topic")
-QUEUE_NAME = os.getenv(
-    "NOTIFICATION_QUEUE", "notification_SendPaymentConfirmation"
-)
+QUEUE_NAME    = os.getenv("NOTIFICATION_QUEUE", "notification_SendPaymentConfirmation")
+
+TWILIO_SID    = os.getenv("TWILIO_ACCOUNT_SID", "")
+TWILIO_TOKEN  = os.getenv("TWILIO_AUTH_TOKEN", "")
+TWILIO_FROM   = os.getenv("TWILIO_FROM_NUMBER", "")
+
+ACCOUNT_SERVICE_URL = os.getenv("ACCOUNT_SERVICE_URL", "http://account-service:8000")
+
+
+def _fetch_phone(renter_id: int) -> str | None:
+    """Look up renter phone number from account-service."""
+    try:
+        r = httpx.get(f"{ACCOUNT_SERVICE_URL}/account/{renter_id}", timeout=10.0)
+        if r.status_code == 200:
+            return r.json().get("phoneNo")
+    except Exception as e:
+        LOG.warning("Could not fetch account for renter %s: %s", renter_id, e)
+    return None
+
+
+def _send_sms(to_number: str, body: str) -> None:
+    if not TWILIO_SID or not TWILIO_TOKEN or not TWILIO_FROM:
+        LOG.warning("Twilio not configured — skipping SMS to %s", to_number)
+        return
+    client = TwilioClient(TWILIO_SID, TWILIO_TOKEN)
+    msg = client.messages.create(to=to_number, from_=TWILIO_FROM, body=body)
+    LOG.info("SMS sent sid=%s to=%s", msg.sid, to_number)
+
+
+def _handle_payment_confirmation(payload: dict) -> None:
+    renter_id  = payload.get("renter_id")
+    rental_id  = payload.get("rental_id")
+    amount     = payload.get("amount", 0)
+    pay_type   = payload.get("type", "rental")
+
+    LOG.info("PaymentConfirmation rental=%s renter=%s type=%s amount=%s",
+             rental_id, renter_id, pay_type, amount)
+
+    if not renter_id:
+        LOG.warning("No renter_id in payload — cannot send SMS")
+        return
+
+    phone = _fetch_phone(renter_id)
+    if not phone:
+        LOG.warning("No phone number found for renter %s — skipping SMS", renter_id)
+        return
+
+    if pay_type == "late":
+        sms_body = (
+            f"[Rental213] Late fee payment confirmed!\n"
+            f"Rental #{rental_id}: SGD {amount:.2f} late fee received.\n"
+            f"Your rental is now completed. Thank you."
+        )
+    else:
+        sms_body = (
+            f"[Rental213] Payment confirmed!\n"
+            f"Rental #{rental_id}: SGD {amount:.2f} received.\n"
+            f"Your rental is now active. Enjoy your equipment!"
+        )
+
+    _send_sms(phone, sms_body)
 
 
 def run_consumer(stop_event, on_ready: Callable[[], None]) -> None:
@@ -42,12 +102,12 @@ def run_consumer(stop_event, on_ready: Callable[[], None]) -> None:
                 try:
                     payload = json.loads(body.decode("utf-8"))
                 except json.JSONDecodeError:
-                    payload = {"raw": body.decode("utf-8", errors="replace")}
-                LOG.info(
-                    "SendPaymentConfirmation rk=%s payload=%s",
-                    method.routing_key,
-                    payload,
-                )
+                    payload = {}
+                    LOG.error("Could not parse message body")
+                try:
+                    _handle_payment_confirmation(payload)
+                except Exception as e:
+                    LOG.error("Error handling notification: %s", e)
                 ch.basic_ack(delivery_tag=method.delivery_tag)
 
             channel.basic_consume(

@@ -256,7 +256,11 @@ export const HomePage: React.FC = () => {
                           <Button
                             size="sm"
                             className="gap-1"
-                            onClick={() => navigate('/my-rentals?filter=payment-due')}
+                            onClick={() =>
+                              isLate
+                                ? navigate(`/late-fee/${rental.id}`)
+                                : navigate('/my-rentals?filter=payment-due')
+                            }
                           >
                             <CreditCard className="w-3 h-3" />
                             Pay Now

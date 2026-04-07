@@ -14,6 +14,7 @@ import { StaffDashboardPage } from './pages/StaffDashboardPage';
 import { AccountLimitedPage } from './pages/AccountLimitedPage';
 import { ReviewPage } from './pages/ReviewPage';
 import { AddListingPage } from './pages/AddListingPage';
+import { LateFeePage } from './pages/LateFeePage';
 import { NotFoundPage } from './pages/NotFoundPage';
 import { RootLayout } from './components/RootLayout';
 
@@ -65,6 +66,10 @@ export const router = createBrowserRouter([
       {
         path: 'add-listing',
         element: <AddListingPage />,
+      },
+      {
+        path: 'late-fee/:rentalId',
+        element: <LateFeePage />,
       },
       {
         path: 'damage-claim/:rentalId',
