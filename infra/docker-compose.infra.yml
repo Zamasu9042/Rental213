@@ -13,6 +13,7 @@ volumes:
   reputation_mysql_data: { name: esd_reputation_mysql_data }
   account_mysql_data:    { name: esd_account_mysql_data }
   damage_mysql_data:     { name: esd_damage_mysql_data }
+  payment_mysql_data: { name: esd_payment_mysql_data }
   
 
 services:
@@ -130,6 +131,28 @@ services:
       start_period: 30s
     networks: [esd-net]
 
+  payment-db:
+    image: mysql:8.0
+    hostname: payment-db
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: payment_db
+      MYSQL_USER: payment
+      MYSQL_PASSWORD: payment_pass
+      MYSQL_ROOT_PASSWORD: root_payment
+    volumes:
+      - payment_mysql_data:/var/lib/mysql
+      - ../backend/payment-service/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    ports:
+      - "3312:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot_payment"]
+      interval: 5s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+    networks: [esd-net]
+
   # ── Message broker ─────────────────────────────────────────────────────────
 
   rabbitmq:
@@ -137,10 +160,10 @@ services:
     hostname: esd-rabbit
     restart: unless-stopped
     ports:
-    - "5672:5672"
-    - "15672:15672"
+      - "5672:5672"
+      - "15672:15672"
     tmpfs:
-    - /var/lib/rabbitmq
+      - /var/lib/rabbitmq
     environment:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
@@ -150,7 +173,6 @@ services:
       timeout: 10s
       retries: 20
       start_period: 90s
-    
     networks: [esd-net]
 
   # ── AMQP exchange + queue initialiser (runs once then exits) ───────────────
