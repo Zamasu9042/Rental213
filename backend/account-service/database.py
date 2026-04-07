@@ -19,12 +19,12 @@ Base = declarative_base()
 _HASH = "$2b$12$r1D9Okz4gN05F/z96YXU9u9D.kp/JZHtYepIFoEL1mIIh.fQIk0bm"
 
 _DEMO_ROWS = [
-    (1001, "Demo Renter",   "+65-9000-1001", "renter@test.com",        "renter"),
-    (1002, "Demo Owner",    "+65-9000-1002", "owner@test.com",         "owner"),
-    (1003, "Demo Staff",    "+65-9000-1003", "staff@test.com",         "staff"),
-    (1004, "Demo Renter 2", "+65-9000-1004", "renter2check@gmail.com", "renter"),
+    (1001, "Demo Renter",   "+6587218728", "renter@test.com",        "renter"),
+    (1002, "Demo Owner",    "+6587218728", "owner@test.com",         "owner"),
+    (1003, "Demo Staff",    "+6587218728", "staff@test.com",         "staff"),
+    (1004, "Demo Renter 2", "+6587218728", "renter2check@gmail.com", "renter"),
     # Renter 3: dedicated Scenario 3 account — damage fee charged to this account
-    (1005, "Demo Renter 3", "+65-9000-1005", "renter3@test.com",       "renter"),
+    (1005, "Demo Renter 3", "+6587218728", "renter3@test.com",       "renter"),
 ]
 
 

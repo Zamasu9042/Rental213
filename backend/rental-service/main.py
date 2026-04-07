@@ -561,12 +561,50 @@ def mark_late_for_payment_service(rental_id: int, db: Session = Depends(get_db))
     return row
 
 
-@app.post("/rental/{rental_id}/complete-after-late-payment", response_model=RentalOut)
-def complete_after_late_payment(rental_id: int, db: Session = Depends(get_db)):
-    """After late fee Stripe webhook (Scenario 2 step 21)."""
+@app.post("/rental/{rental_id}/revert-to-active", response_model=RentalOut)
+def revert_to_active(rental_id: int, db: Session = Depends(get_db)):
+    """
+    Compensating action (Scenario 2): revert a RETURNED rental back to ACTIVE.
+    Called by Camunda when the Payment Service fails to record the late fee,
+    ensuring the renter is not locked out of the platform.
+    """
     row = db.query(Rental).filter(Rental.id == rental_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="Rental not found")
+    if row.status == STATUS_ACTIVE:
+        return row  # Already active, idempotent
+    if row.status != STATUS_RETURNED:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Only RETURNED rental can be reverted to ACTIVE (current: {row.status})",
+        )
+    row.status = STATUS_ACTIVE
+    row.return_timestamp = None
+    db.commit()
+    db.refresh(row)
+    # Mark equipment as rented again
+    try:
+        with _equipment_client() as client:
+            _put_equipment(client, row.equipment_id, {"status": "rented"})
+    except Exception:
+        pass
+    try:
+        _publish_change_status(
+            row.id, row.equipment_id, row.renter_id, STATUS_RETURNED, STATUS_ACTIVE
+        )
+    except Exception:
+        pass
+    return row
+
+
+@app.post("/rental/{rental_id}/complete-after-late-payment", response_model=RentalOut)
+def complete_after_late_payment(rental_id: int, db: Session = Depends(get_db)):
+    """After late fee Stripe webhook (Scenario 2). Idempotent — safe to call twice."""
+    row = db.query(Rental).filter(Rental.id == rental_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Rental not found")
+    if row.status == STATUS_COMPLETED:
+        return row  # Already completed, idempotent
     if row.status != STATUS_LATE:
         raise HTTPException(
             status_code=409,

@@ -41,6 +41,7 @@ app = FastAPI(title="Payment Service")
 
 RENTAL_SERVICE_URL    = os.getenv("RENTAL_SERVICE_URL", "http://localhost:8002").rstrip("/")
 FRONTEND_URL          = os.getenv("FRONTEND_URL",        "http://localhost:5173").rstrip("/")
+PROXY_URL             = os.getenv("PROXY_URL",           "http://camunda-proxy:3001").rstrip("/")
 STRIPE_SECRET_KEY     = os.getenv("STRIPE_SECRET_KEY",     "").strip()
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "").strip()
 
@@ -442,7 +443,23 @@ def _process_checkout_event(event: dict | Any, db: Session) -> dict:
         if kind == TYPE_RENTAL and rental_id:
             c.post(f"/rental/{rental_id}/finalize-booking")
         elif kind == TYPE_LATE and rental_id:
-            c.post(f"/rental/{rental_id}/complete-after-late-payment")
+            # Camunda orchestrates the remaining steps (reputation penalty → complete rental).
+            # Signal Camunda via proxy to advance the return workflow.
+            # Fallback: complete rental directly if proxy/Camunda is unreachable.
+            camunda_signalled = False
+            try:
+                with httpx.Client(base_url=PROXY_URL, timeout=10.0) as proxy:
+                    sig_resp = proxy.post(
+                        "/api/messages/late-payment-confirmed",
+                        json={"rental_id": rental_id, "payment_id": str(row.id)},
+                    )
+                    if sig_resp.is_success:
+                        camunda_signalled = True
+            except Exception:
+                pass
+            if not camunda_signalled:
+                # Camunda unreachable — complete rental directly as fallback
+                c.post(f"/rental/{rental_id}/complete-after-late-payment")
         # TYPE_DAMAGE: no rental state change — equipment already marked under_repair by worker
 
     # Publish confirmation to RabbitMQ → notification-service → SMS

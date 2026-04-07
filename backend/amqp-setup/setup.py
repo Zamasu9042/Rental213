@@ -14,6 +14,7 @@ EXCHANGE = os.getenv("AMQP_EXCHANGE", "rental_topic")
 # queue name -> routing key(s) to bind
 BINDINGS = [
     ("notification_SendPaymentConfirmation", ["SendPaymentConfirmation"]),
+    ("notification_SendErrorNotification",   ["SendErrorNotification"]),
 ]
 
 

@@ -99,6 +99,24 @@ app.post("/internal/stripe-url", express.json(), (req, res) => {
   return res.json({ ok: true });
 });
 
+// ─── Scenario 2: in-memory stores for return workflow ─────────────────────────
+// processInstanceKey → { checkoutUrl, rentalId }
+const lateCheckoutStore = new Map();
+// rentalId (string) → processInstanceKey (string)
+const rentalToProcessKey = new Map();
+
+// Worker registers the late-fee Stripe checkout URL
+app.post("/internal/late-checkout-url", express.json(), (req, res) => {
+  const { processInstanceKey, checkoutUrl, rentalId } = req.body;
+  if (!processInstanceKey || !checkoutUrl) {
+    return res.status(400).json({ error: "processInstanceKey and checkoutUrl required" });
+  }
+  lateCheckoutStore.set(String(processInstanceKey), { checkoutUrl, rentalId });
+  if (rentalId) rentalToProcessKey.set(String(rentalId), String(processInstanceKey));
+  console.log(`[proxy] Late checkout URL registered for key=${processInstanceKey}`);
+  return res.json({ ok: true });
+});
+
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
 /**
@@ -177,6 +195,120 @@ app.get("/api/rentals/:processInstanceKey/stripe-url", (req, res) => {
  * Returns empty list — rental data lives in rental-service.
  */
 app.get("/api/rentals", (_req, res) => res.json([]));
+
+// ─── Scenario 2: Return workflow ──────────────────────────────────────────────
+
+/**
+ * POST /api/return
+ * Called by frontend when renter confirms item return.
+ * Starts the Camunda return-workflow. Workers do all the work:
+ *   - worker_return_rental.py    → mark rental returned, detect if late
+ *   - worker_account.py          → get renter account info
+ *   - worker_record_late_fee.py  → record late fee in payment service
+ *   - worker_late_checkout.py    → create Stripe checkout for late fee
+ *   - worker_verify_payment.py   → verify payment confirmed (after webhook)
+ *   - worker_reputation_penalty.py → apply late return penalty
+ *   - worker_complete_late_rental.py → mark rental completed
+ *
+ * Body: { renterId, rentalId, equipmentId }
+ * Returns: { processInstanceKey, status: "started" }
+ */
+app.post("/api/return", express.json(), async (req, res) => {
+  const { renterId, rentalId, equipmentId } = req.body;
+  const missing = ["renterId", "rentalId"].filter(f => req.body[f] == null);
+  if (missing.length) {
+    return res.status(400).json({ error: `Missing fields: ${missing.join(", ")}` });
+  }
+
+  try {
+    const token = await getAccessToken();
+    const resp = await fetch(`${CAMUNDA_BASE_URL}/process-instances`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        processDefinitionId: "return-workflow",
+        variables: {
+          renterId:    String(renterId),
+          rentalId:    String(rentalId),
+          equipmentId: String(equipmentId || ""),
+          frontendUrl: FRONTEND_URL,
+        },
+      }),
+    });
+
+    if (!resp.ok) {
+      const err = await resp.text();
+      console.error("[proxy] Camunda return-workflow start failed:", err);
+      return res.status(502).json({ error: "Failed to start return workflow", detail: err });
+    }
+
+    const data = await resp.json();
+    const processInstanceKey = String(data.processInstanceKey || data.key);
+    rentalToProcessKey.set(String(rentalId), processInstanceKey);
+    console.log(`[proxy] Return workflow started: key=${processInstanceKey} rentalId=${rentalId}`);
+
+    return res.status(201).json({ processInstanceKey, status: "started" });
+  } catch (err) {
+    console.error("[proxy] POST /api/return error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/return/:processInstanceKey/checkout-url
+ * Frontend polls this after the return workflow is started, waiting for
+ * worker_late_checkout.py to register the Stripe URL for the late fee.
+ */
+app.get("/api/return/:processInstanceKey/checkout-url", (req, res) => {
+  const entry = lateCheckoutStore.get(req.params.processInstanceKey);
+  if (entry?.checkoutUrl) {
+    return res.json({ checkoutUrl: entry.checkoutUrl });
+  }
+  return res.status(202).json({ checkoutUrl: null });
+});
+
+/**
+ * POST /api/messages/late-payment-confirmed
+ * Called by payment-service after Stripe webhook confirms late fee payment.
+ * Publishes a Camunda message to advance the return-workflow past its
+ * Intermediate Message Catch Event ("LatePaymentConfirmed").
+ *
+ * Body: { rental_id, payment_id }
+ */
+app.post("/api/messages/late-payment-confirmed", express.json(), async (req, res) => {
+  const { rental_id, payment_id } = req.body;
+  if (!rental_id) {
+    return res.status(400).json({ error: "rental_id required" });
+  }
+
+  try {
+    const token = await getAccessToken();
+    const msgResp = await fetch(`${CAMUNDA_BASE_URL}/messages`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messageName:     "LatePaymentConfirmed",
+        correlationKey:  String(rental_id),
+        variables: {
+          paymentConfirmed:    true,
+          confirmedPaymentId:  String(payment_id || ""),
+        },
+      }),
+    });
+
+    if (!msgResp.ok) {
+      const err = await msgResp.text();
+      console.error("[proxy] Camunda message publish failed:", err);
+      return res.status(502).json({ error: "Failed to publish Camunda message", detail: err });
+    }
+
+    console.log(`[proxy] LatePaymentConfirmed published for rentalId=${rental_id}`);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[proxy] POST /api/messages/late-payment-confirmed error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
 
 /**
  * POST /webhook/stripe
