@@ -13,7 +13,7 @@ volumes:
   reputation_mysql_data: { name: esd_reputation_mysql_data }
   account_mysql_data:    { name: esd_account_mysql_data }
   damage_mysql_data:     { name: esd_damage_mysql_data }
-  rabbitmq_data:         { name: esd_rabbitmq_data }
+  
 
 services:
 
@@ -137,16 +137,20 @@ services:
     hostname: esd-rabbit
     restart: unless-stopped
     ports:
-      - "5672:5672"
-      - "15672:15672"    # management UI at http://localhost:15672 (guest/guest)
-    volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
+    - "5672:5672"
+    - "15672:15672"
+    tmpfs:
+    - /var/lib/rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "ping"]
-      interval: 10s
+      interval: 15s
       timeout: 10s
       retries: 20
-      start_period: 60s
+      start_period: 90s
+    
     networks: [esd-net]
 
   # ── AMQP exchange + queue initialiser (runs once then exits) ───────────────

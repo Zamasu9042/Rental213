@@ -37,7 +37,7 @@ async def main():
         client_id=CAMUNDA_CLIENT_ID,
         client_secret=CAMUNDA_CLIENT_SECRET,
         cluster_id=CAMUNDA_CLUSTER_ID,
-        region=CAMUNDA_REGION" 
+        region=CAMUNDA_REGION
     )
     worker = ZeebeWorker(channel)
 

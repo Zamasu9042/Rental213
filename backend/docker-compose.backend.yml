@@ -193,23 +193,7 @@ services:
         condition: service_healthy
     networks: [esd-net]
 
-  worker-rental:
-    build:
-      context: ./workers
-      dockerfile: Dockerfile.workers
-    command: python worker_rental.py
-    restart: unless-stopped
-    environment:
-      CAMUNDA_CLIENT_ID: ${CAMUNDA_CLIENT_ID}
-      CAMUNDA_CLIENT_SECRET: ${CAMUNDA_CLIENT_SECRET}
-      CAMUNDA_CLUSTER_ID: ${CAMUNDA_CLUSTER_ID}
-      CAMUNDA_REGION: ${CAMUNDA_REGION:-sin-2}
-      RENTAL_SERVICE_URL: http://rental-service:8000
-    depends_on:
-      rental-service:
-        condition: service_healthy
-    networks: [esd-net]
-
+  
   worker-equipment:
     build:
       context: ./workers
@@ -227,18 +211,22 @@ services:
         condition: service_healthy
     networks: [esd-net]
 
-  worker-stripe:
-    build:
-      context: ./workers
-      dockerfile: Dockerfile.workers
-    command: python worker_stripe.py
+  worker-initiate-payment:
+    build: {context: ./workers, dockerfile: Dockerfile.workers}
+    command: python worker_initiate_payment.py
     restart: unless-stopped
     environment:
       CAMUNDA_CLIENT_ID: ${CAMUNDA_CLIENT_ID}
       CAMUNDA_CLIENT_SECRET: ${CAMUNDA_CLIENT_SECRET}
       CAMUNDA_CLUSTER_ID: ${CAMUNDA_CLUSTER_ID}
       CAMUNDA_REGION: ${CAMUNDA_REGION:-sin-2}
+      RENTAL_SERVICE_URL: http://rental-service:8000
+      PAYMENT_SERVICE_URL: http://payment-wrapper:8000
+      PROXY_URL: http://camunda-proxy:3001
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
     networks: [esd-net]
+
+
 
   worker-rabbitmq:
     build:
