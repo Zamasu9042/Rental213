@@ -23,7 +23,7 @@ import {
 } from 'lucide-react';
 import {
   getRental, getRenterDashboard, getEquipmentById, getRentalsForEquipment,
-  getEquipment, markCollected, confirmReturn,
+  getEquipment, getAllEquipment, markCollected, confirmReturn,
   getAccount, getDamageClaimByRental,
   ApiRental, ApiDamageClaim,
 } from '../../lib/api';
@@ -135,7 +135,7 @@ export const ConfirmationPage: React.FC = () => {
       );
 
       // ── Rented Out tab: rentals for equipment I own ──
-      const allEquipment = await getEquipment();
+      const allEquipment = await getAllEquipment();
       const myEquipment = allEquipment.filter(e => e.ownerId === user.id);
       const rentedOutRows: RentalDisplay[] = [];
       await Promise.all(

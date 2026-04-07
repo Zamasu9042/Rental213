@@ -4,6 +4,7 @@ import { useApp } from '../context/AppContext';
 import { Equipment } from '../context/AppContext';
 import {
   getEquipment,
+  getAllEquipment,
   getRenterDashboard,
   getEquipmentById,
   getRentalsForEquipment,
@@ -86,7 +87,7 @@ export const HomePage: React.FC = () => {
           })
         );
 
-        const allEq = await getEquipment();
+        const allEq = await getAllEquipment();
         const owned = allEq.filter(e => e.ownerId === user.id);
         const rentedOut: HomeRentalRow[] = [];
         await Promise.all(

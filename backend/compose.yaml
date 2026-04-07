@@ -418,12 +418,13 @@ services:
       context: ./payment-service
       dockerfile: Dockerfile
     restart: unless-stopped
+    env_file:
+      - path: ../.env
+        required: false
     environment:
       DATABASE_URL: mysql+pymysql://payment:payment_pass@payment-db:3306/payment_db
       RENTAL_SERVICE_URL: http://rental-service:8000
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
-      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
-      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
       AMQP_HOST: rabbitmq
       AMQP_PORT: "5672"
       AMQP_EXCHANGE: rental_topic
@@ -456,8 +457,10 @@ services:
       context: ./payment-wrapper
       dockerfile: Dockerfile
     restart: unless-stopped
-    environment:
-      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+    env_file:
+      - path: ../.env
+        required: false
+    environment: {}
     ports:
       - "8008:8000"
     healthcheck:
@@ -480,14 +483,15 @@ services:
       context: .
       dockerfile: Dockerfile.proxy
     restart: unless-stopped
+    env_file:
+      - path: ../.env
+        required: false
     environment:
       PORT: "3001"
       CAMUNDA_CLIENT_ID: ${CAMUNDA_CLIENT_ID:-AQazmsVXl7idqPlY1pMGm~Zh7Gv3Lgxk}
       CAMUNDA_CLIENT_SECRET: ${CAMUNDA_CLIENT_SECRET:-uH0.fzO7HfUxQ0FTlEe0DsBRe-WVgbxIq_BD0H8rpw422I.1Ig.jGZ~9JVZiU0R8}
       CAMUNDA_CLUSTER_ID: ${CAMUNDA_CLUSTER_ID:-db920878-5333-4352-b103-0803eb907686}
       CAMUNDA_REGION: ${CAMUNDA_REGION:-sin-2}
-      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
-      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
       RENTAL_SERVICE_URL: http://rental-service:8000
       PAYMENT_SERVICE_URL: http://payment-service:8000
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}

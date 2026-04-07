@@ -19,5 +19,5 @@ VALUES
   (4, 1001, 1, '2026-04-03 09:00:00', '2026-04-05 17:00:00', 'LATE', '2026-04-06 10:00:00', 12.50, 'SMU / Bras Basah'),
   -- PENDING: Drill second rental, awaiting payment (blocks renter from browsing)
   (5, 1001, 2, '2026-04-06 09:00:00', '2026-04-07 18:00:00', 'PENDING', NULL, 6.00, 'Singapore Central'),
-  -- ACTIVE: second renter + same owner (equipment 1 — no other ACTIVE on this item in seed)
-  (6, 1004, 1, '2026-04-06 08:00:00', '2026-04-15 18:00:00', 'ACTIVE', NULL, 12.50, 'SMU / Bras Basah');
+  -- COMPLETED: renter2 past rental — no outstanding payments, equipment 1 free to browse
+  (6, 1004, 1, '2026-03-10 08:00:00', '2026-03-12 18:00:00', 'COMPLETED', '2026-03-12 17:00:00', 12.50, 'SMU / Bras Basah');
