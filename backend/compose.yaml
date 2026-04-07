@@ -418,12 +418,13 @@ services:
       context: ./payment-service
       dockerfile: Dockerfile
     restart: unless-stopped
+    env_file:
+      - path: ../.env
+        required: false
     environment:
       DATABASE_URL: mysql+pymysql://payment:payment_pass@payment-db:3306/payment_db
       RENTAL_SERVICE_URL: http://rental-service:8000
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
-      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
-      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
       AMQP_HOST: rabbitmq
       AMQP_PORT: "5672"
       AMQP_EXCHANGE: rental_topic
@@ -456,8 +457,10 @@ services:
       context: ./payment-wrapper
       dockerfile: Dockerfile
     restart: unless-stopped
-    environment:
-      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+    env_file:
+      - path: ../.env
+        required: false
+    environment: {}
     ports:
       - "8008:8000"
     healthcheck:
