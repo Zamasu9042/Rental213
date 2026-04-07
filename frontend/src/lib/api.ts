@@ -78,9 +78,12 @@ export interface ApiEquipment {
 
 /** Map equipment-service schema → frontend Equipment shape */
 export function mapEquipment(item: ApiEquipment) {
-  // Build full image URL via Kong's equipment-images route
+  // Build full image URL — absolute URLs (public/seeded) used as-is;
+  // relative /images/... paths are served via Kong's equipment-images route
   const imageUrl = item.image_url
-    ? `${API_BASE}/api/equipment-images${item.image_url.replace(/^\/images/, "")}`
+    ? item.image_url.startsWith("http")
+      ? item.image_url
+      : `${API_BASE}/api/equipment-images${item.image_url.replace(/^\/images/, "")}`
     : null;
 
   return {

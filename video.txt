@@ -1,0 +1,6 @@
+Replace this file content with your YouTube demo URL (max 3 minutes).
+
+Example:
+https://www.youtube.com/watch?v=YOUR_VIDEO_ID
+
+Ensure link is publicly viewable or unlisted with link access for instructors.

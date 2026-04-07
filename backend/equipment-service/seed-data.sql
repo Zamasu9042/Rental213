@@ -5,8 +5,8 @@
 USE equipment_db;
 
 INSERT IGNORE INTO equipment
-  (id, owner_id, item_name, category, status, hourly_rate, pickup_location)
+  (id, owner_id, item_name, category, status, hourly_rate, pickup_location, image_url)
 VALUES
-  (1, 1002, 'DJI Drone Mini', 'Drone', 'available', 12.50, 'SMU / Bras Basah'),
-  (2, 1002, 'Bosch Power Drill', 'Tools', 'available', 6.00, 'Singapore Central'),
-  (3, 1002, 'Sony Mirrorless Camera', 'Camera', 'under_repair', 18.00, 'Singapore East');
+  (1, 1002, 'DJI Drone Mini', 'Drone', 'available', 12.50, 'SMU / Bras Basah', 'https://picsum.photos/seed/dji-drone/600/400'),
+  (2, 1002, 'Bosch Power Drill', 'Tools', 'available', 6.00, 'Singapore Central', 'https://picsum.photos/seed/bosch-drill/600/400'),
+  (3, 1002, 'Sony Mirrorless Camera', 'Camera', 'under_repair', 18.00, 'Singapore East', 'https://picsum.photos/seed/sony-camera/600/400');
