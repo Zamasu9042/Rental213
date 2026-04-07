@@ -15,7 +15,7 @@ CAMUNDA_CLIENT_SECRET = "uH0.fzO7HfUxQ0FTlEe0DsBRe-WVgbxIq_BD0H8rpw422I.1Ig.jGZ~
 CAMUNDA_CLUSTER_ID    = "db920878-5333-4352-b103-0803eb907686"
 CAMUNDA_REGION        = "sin-2"
 
-ACCOUNT_SERVICE_URL = "http://localhost:5001"
+ACCOUNT_SERVICE_URL = "http://localhost:8006"
 
 async def main():
     channel = create_camunda_cloud_channel(
