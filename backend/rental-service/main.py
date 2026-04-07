@@ -291,11 +291,7 @@ def finalize_booking_after_payment(rental_id: int, db: Session = Depends(get_db)
             raise HTTPException(
                 status_code=502, detail="Cannot reach equipment service"
             ) from exc
-    if (eq.get("status") or "").lower() != "available":
-        raise HTTPException(
-            status_code=409,
-            detail="Equipment is no longer available; cannot finalize booking",
-        )
+
 
     row.status = STATUS_ACTIVE
     db.commit()

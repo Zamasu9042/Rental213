@@ -21,10 +21,19 @@ async def main():
     worker = ZeebeWorker(channel)
 
     @worker.task(task_type="get-account-info")
-    async def get_account_info(renterId: str):
-        print(f"[get-account-info] renterId={renterId}")
+    async def get_account_info(
+        renterId: str = "",
+        renter_id: str = "",
+        accountId: str = "",
+        **kwargs
+    ):
+        actual_id = renterId or renter_id or accountId
+        if not actual_id:
+            print(f"[get-account-info] ERROR: no renter ID in variables. Got: {kwargs}")
+            raise ValueError("No renter ID provided in job variables")
+        print(f"[get-account-info] renterId={actual_id}")
         async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{ACCOUNT_SERVICE_URL}/account/{renterId}")
+            resp = await client.get(f"{ACCOUNT_SERVICE_URL}/account/{actual_id}")
             resp.raise_for_status()
             data = resp.json()
         print(f"[get-account-info] done: {data}")
