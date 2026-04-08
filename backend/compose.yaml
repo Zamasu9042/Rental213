@@ -57,7 +57,7 @@ services:
       MYSQL_ROOT_PASSWORD: root_rental
     volumes:
       - rental_mysql_data:/var/lib/mysql
-      - ./rental-service/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./rental-service/docker-init/01-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
       - ./rental-service/seed-data.sql:/docker-entrypoint-initdb.d/02-seed-data.sql:ro
     ports:
       - "3308:3306"
@@ -240,8 +240,8 @@ services:
         ]
       interval: 10s
       timeout: 5s
-      retries: 5
-      start_period: 20s
+      retries: 12
+      start_period: 60s
     networks:
       - esd-net
 
@@ -448,6 +448,7 @@ services:
       AMQP_HOST: rabbitmq
       AMQP_PORT: "5672"
       AMQP_EXCHANGE: rental_topic
+      DEMO_PHONE_NUMBER: ${DEMO_PHONE_NUMBER:-}
     ports:
       - "3001:3001"
     depends_on:

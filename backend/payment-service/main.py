@@ -318,7 +318,7 @@ def pay_rental(body: PayRentalBody, db: Session = Depends(get_db)):
             "payment_id":  row.id,
             "rental_id":   body.rental_id,
             "kind":        TYPE_RENTAL,
-            "success_url": f"{FRONTEND_URL}/confirmation?rental_id={body.rental_id}",
+            "success_url": f"{FRONTEND_URL}/confirmation?rental_id={body.rental_id}&payment_id={row.id}",
             "cancel_url":  f"{FRONTEND_URL}/marketplace",
         })
     if resp.is_success:
@@ -327,8 +327,25 @@ def pay_rental(body: PayRentalBody, db: Session = Depends(get_db)):
         db.commit()
         checkout_url = data["checkout_url"]
     else:
-        # payment-wrapper not available — fall back to mock confirmation
-        checkout_url = f"{FRONTEND_URL}/confirmation?rental_id={body.rental_id}&mock=1"
+        # Stripe not configured — finalize immediately in mock mode
+        now = _now()
+        row.status = STATUS_PAID
+        row.updated_at = now
+        db.commit()
+        db.refresh(row)
+        print(f"[pay_rental] mock: payment {row.id} marked PAID, finalizing booking", flush=True)
+        with _rental_client() as c:
+            c.post(f"/rental/{body.rental_id}/finalize-booking")
+        try:
+            httpx.post(
+                f"{ORCHESTRATOR_URL}/internal/payment-confirmed",
+                json={"rental_id": body.rental_id, "renter_id": body.renter_id,
+                      "amount": float(body.amount), "kind": TYPE_RENTAL},
+                timeout=10.0,
+            )
+        except Exception as e:
+            print(f"[pay_rental] mock: orchestrator notify failed: {e}", flush=True)
+        checkout_url = f"{FRONTEND_URL}/confirmation?rental_id={body.rental_id}&payment_id={row.id}&mock=1"
 
     return {
         **payment_to_dict(row),

@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Card, CardContent } from '../components/ui/card';
-import { differenceInDays } from 'date-fns';
+import { differenceInHours } from 'date-fns';
 import { ChevronLeft, MapPin, Shield, Loader2, Star, AlertTriangle } from 'lucide-react';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -112,16 +112,22 @@ export const EquipmentDetailPage: React.FC = () => {
     })();
   }, [id, user, equipment, reviewTick]);
 
-  const today = new Date().toISOString().split('T')[0];
+  const todayLocal = (() => {
+    const now = new Date();
+    now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+    return now.toISOString().slice(0, 16); // "YYYY-MM-DDTHH:MM"
+  })();
 
   const calculateTotal = () => {
     if (!startDate || !endDate || !equipment) return 0;
-    const days = differenceInDays(new Date(endDate), new Date(startDate)) + 1;
-    return days > 0 ? +(days * equipment.price * 24).toFixed(2) : 0;
+    const hours = differenceInHours(new Date(endDate), new Date(startDate));
+    return hours > 0 ? +(hours * equipment.price).toFixed(2) : 0;
   };
 
   const handlePayment = () => {
-    if (!startDate || !endDate) { alert('Please select rental dates'); return; }
+    if (!startDate || !endDate) { alert('Please select rental start and end date/time'); return; }
+    const hours = differenceInHours(new Date(endDate), new Date(startDate));
+    if (hours < 1) { alert('Rental must be at least 1 hour'); return; }
     navigate('/payment', {
       state: {
         equipment,
@@ -159,7 +165,7 @@ export const EquipmentDetailPage: React.FC = () => {
   }
 
   const totalPrice = calculateTotal();
-  const rentalDays = startDate && endDate ? differenceInDays(new Date(endDate), new Date(startDate)) + 1 : 0;
+  const rentalHours = startDate && endDate ? differenceInHours(new Date(endDate), new Date(startDate)) : 0;
 
   const placeholderImg = `https://placehold.co/600x400?text=${encodeURIComponent(equipment.name)}`;
   const displayImages = equipment.images.length > 0 ? equipment.images : [placeholderImg];
@@ -312,25 +318,25 @@ export const EquipmentDetailPage: React.FC = () => {
                   <h3 className="font-semibold text-sm mb-3">Rental period</h3>
                   <div className="grid grid-cols-2 gap-3 mb-3">
                     <div>
-                      <Label htmlFor="startDate" className="text-xs text-gray-600 mb-1 block">Start</Label>
+                      <Label htmlFor="startDate" className="text-xs text-gray-600 mb-1 block">Start date &amp; time</Label>
                       <Input
                         id="startDate"
-                        type="date"
-                        min={today}
+                        type="datetime-local"
+                        min={todayLocal}
                         value={startDate}
                         onChange={(e) => {
                           setStartDate(e.target.value);
-                          if (endDate && e.target.value > endDate) setEndDate('');
+                          if (endDate && e.target.value >= endDate) setEndDate('');
                         }}
                         className="text-sm"
                       />
                     </div>
                     <div>
-                      <Label htmlFor="endDate" className="text-xs text-gray-600 mb-1 block">End</Label>
+                      <Label htmlFor="endDate" className="text-xs text-gray-600 mb-1 block">End date &amp; time</Label>
                       <Input
                         id="endDate"
-                        type="date"
-                        min={startDate || today}
+                        type="datetime-local"
+                        min={startDate || todayLocal}
                         value={endDate}
                         onChange={(e) => setEndDate(e.target.value)}
                         disabled={!startDate}
@@ -339,13 +345,13 @@ export const EquipmentDetailPage: React.FC = () => {
                     </div>
                   </div>
 
-                  {startDate && endDate && rentalDays > 0 && (
+                  {startDate && endDate && rentalHours > 0 && (
                     <Card className="bg-blue-50 border-blue-200">
                       <CardContent className="p-3 sm:p-4">
                         <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
                           <div>
                             <p className="text-xs text-gray-600">
-                              {rentalDays} {rentalDays === 1 ? 'day' : 'days'} × ${equipment.price.toFixed(2)}/hr × 24h
+                              {rentalHours} {rentalHours === 1 ? 'hour' : 'hours'} × ${equipment.price.toFixed(2)}/hr
                             </p>
                             <p className="text-xl font-semibold text-blue-600">${totalPrice.toFixed(2)}</p>
                           </div>

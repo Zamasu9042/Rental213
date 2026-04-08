@@ -242,10 +242,18 @@ export async function seedDemoRental(
   renterId: number,
   equipmentId: number = 1
 ): Promise<{ rental_id: number; renter_id: number; end_time: string; status: string }> {
-  return request(`/api/debug/seed-late-return`, {
-    method: "POST",
-    body: JSON.stringify({ renter_id: renterId, equipment_id: equipmentId }),
-  });
+  // Call rental-service directly via Kong (/api/rental → rental-service, strip_path=true)
+  // This bypasses camunda-proxy so it works without a proxy rebuild.
+  const data = await request<any>(
+    `/api/rental/demo/seed-collected?renter_id=${renterId}&equipment_id=${equipmentId}`,
+    { method: "POST" }
+  );
+  return {
+    rental_id: data.id,
+    renter_id: data.renter_id,
+    end_time: data.end_time,
+    status: data.status,
+  };
 }
 
 /** When returning from Stripe Checkout: mark paid + finalize if webhook never arrived (common on localhost). */

@@ -244,12 +244,15 @@ export const ConfirmationPage: React.FC = () => {
     }
   };
 
+  // Return flow dialog: which rental is open for return confirmation
+  const [returnDialogRentalId, setReturnDialogRentalId] = useState<number | null>(null);
+
   /**
-   * Scenario 2: After rental service records the dual confirm-return,
-   * if the rental transitions to RETURNED, POST to Camunda's /api/return-workflow.
-   * Camunda checks late, records late fee, marks equipment available, then:
-   *   - isLate=true  → navigate to /late-fee/:rentalId
-   *   - isLate=false → stay on page (rental will show COMPLETED)
+   * Scenario 2 (docs-compliant):
+   *  1. Renter clicks "Confirm Return" → open ReturnFlowDialog
+   *  2. Dialog does GET /api/rental/:id → shows loan + due date to renter
+   *  3. Renter optionally checks "Simulate late return"
+   *  4. Renter clicks "Confirm" in dialog → PUT confirm-return → if RETURNED → POST /api/return-workflow
    */
   const handleConfirmReturn = async (rentalId: number, endTime: string) => {
     setActioning(prev => new Set(prev).add(rentalId));
@@ -258,24 +261,30 @@ export const ConfirmationPage: React.FC = () => {
       // to end_time + 2 hours so Camunda detects a late return.
       let returnTs: string | undefined;
       if (simulateLateSet.has(rentalId)) {
-        const late = new Date(endTime);
-        late.setHours(late.getHours() + 2);
-        returnTs = late.toISOString();
+        // end_time from API has no "Z" — browser would treat it as local time.
+        // Force UTC parse so +2hr is relative to the DB's UTC timestamp.
+        const endUtcMs = new Date(
+          endTime.endsWith('Z') || endTime.includes('+') ? endTime : endTime + 'Z'
+        ).getTime();
+        returnTs = new Date(endUtcMs + 2 * 60 * 60 * 1000).toISOString();
       }
+      // Step 1: PUT confirm-return (dual-confirm in rental-service)
       const updated = await confirmReturn(rentalId, Number(user!.id), returnTs);
 
-      if (updated.status === 'RETURNED') {
-        // Both parties confirmed — trigger Camunda return workflow
+      if (updated.status === 'RETURNED' || updated.status === 'LATE') {
+        // POST /api/return-workflow via Kong → Camunda:
+        //   1. Compares return_timestamp vs end_time
+        //   2. If late: PUT rental→LATE, GET account info, POST payment/outstanding (unpaid),
+        //      PUT equipment→available
+        //   3. If on-time: marks rental COMPLETED
+        // After this, reload — renter sees LATE rental card with "Pay Late Fee" button.
+        // They are blocked from new bookings until they pay (BLOCKING_RENTAL_STATUSES includes LATE).
         try {
           const result = await startReturnWorkflow(rentalId);
           if (result.reverted && result.error) {
             alert(result.error);
-          } else if (result.isLate && result.paymentId != null) {
-            navigate(`/late-fee/${rentalId}`, {
-              state: { paymentId: result.paymentId, lateFee: result.lateFee },
-            });
-            return;
           }
+          // Whether late or on-time, fall through to load() — UI reflects the new status
         } catch (err) {
           alert(err instanceof Error ? err.message : 'Return workflow failed. Please contact support.');
         }
@@ -440,7 +449,7 @@ export const ConfirmationPage: React.FC = () => {
                 onCollect={() => runAction(rental.id, () => markCollected(rental.id, Number(user!.id)))}
                 simulateLate={simulateLateSet.has(rental.id)}
                 onToggleSimulateLate={() => toggleSimulateLate(rental.id)}
-                onConfirmReturn={() => handleConfirmReturn(rental.id, rental.end_time)}
+                onConfirmReturn={() => setReturnDialogRentalId(rental.id)}
                 onOpenReview={() => setReviewRental(rental)}
                 onFileClaim={() => navigate(`/damage-claim/${rental.id}`, {
                   state: {
@@ -468,6 +477,21 @@ export const ConfirmationPage: React.FC = () => {
         </div>
       </div>
     </div>
+
+    {/* Return flow dialog — GET rental → show loan/due date → confirm → Camunda */}
+    {returnDialogRentalId != null && user && (
+      <ReturnFlowDialog
+        rentalId={returnDialogRentalId}
+        userId={Number(user.id)}
+        simulateLate={simulateLateSet.has(returnDialogRentalId)}
+        onToggleSimulateLate={() => toggleSimulateLate(returnDialogRentalId)}
+        onClose={() => setReturnDialogRentalId(null)}
+        onConfirmed={(rentalId, endTime) => {
+          setReturnDialogRentalId(null);
+          handleConfirmReturn(rentalId, endTime);
+        }}
+      />
+    )}
 
     {user && (
       <RentalReviewDialog
@@ -642,7 +666,7 @@ const RentalCard: React.FC<RentalCardProps> = ({
             {/* ── LATE ── */}
             {rental.status === 'LATE' && isRenter && (
               <Button size="sm" variant="destructive" className="gap-1 h-8 text-xs" onClick={() => onNavigate(`/late-fee/${rental.id}`)}>
-                <CreditCard className="w-3 h-3" /> Pay late fee
+                <CreditCard className="w-3 h-3" /> Pay Late Fee
               </Button>
             )}
           </div>
@@ -742,7 +766,9 @@ const PostPaymentView: React.FC<{
   const [rental, setRental] = useState<ApiRental | null>(null);
   const [equipmentName, setEquipmentName] = useState('');
   const [loading, setLoading] = useState(true);
-  const [mockLateFee, setMockLateFee] = useState(false);
+  const [paymentType, setPaymentType] = useState<'rental' | 'late' | null>(null);
+
+  const isLatePayment = paymentType === 'late';
 
   useEffect(() => {
     let cancelled = false;
@@ -769,10 +795,11 @@ const PostPaymentView: React.FC<{
           const eq = await getEquipmentById(r.equipment_id);
           if (!cancelled) setEquipmentName(eq.name);
         } catch { /* non-fatal */ }
-        if (isMock && paymentIdParam) {
+        // Always check payment type (needed for both mock and real Stripe flows)
+        if (paymentIdParam) {
           try {
             const pay = await getPayment(Number(paymentIdParam));
-            if (!cancelled && pay.type === 'late') setMockLateFee(true);
+            if (!cancelled) setPaymentType(pay.type === 'late' ? 'late' : 'rental');
           } catch { /* ignore */ }
         }
       } finally {
@@ -791,18 +818,18 @@ const PostPaymentView: React.FC<{
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="max-w-2xl mx-auto px-4 py-12">
-        <div className="bg-white rounded-lg p-8 mb-6 text-center shadow-sm">
-          <CheckCircle className="w-16 h-16 text-green-500 mx-auto mb-4" />
+        <div className={`rounded-lg p-8 mb-6 text-center shadow-sm ${isLatePayment ? 'bg-amber-50 border border-amber-200' : 'bg-white'}`}>
+          <CheckCircle className={`w-16 h-16 mx-auto mb-4 ${isLatePayment ? 'text-amber-500' : 'text-green-500'}`} />
           <h1 className="text-3xl mb-2">
-            {mockLateFee && isMock
-              ? 'Late Fee Recorded'
-              : isMock
-                ? 'Booking Created!'
-                : 'Payment Successful!'}
+            {isLatePayment
+              ? isMock ? 'Late Payment Recorded' : 'Late Payment Confirmed!'
+              : isMock ? 'Booking Created!' : 'Payment Successful!'}
           </h1>
           <p className="text-gray-600">
-            {mockLateFee && isMock
-              ? 'Mock mode — late fee was finalized without Stripe. Confirmation SMS is sent if notification-service is running.'
+            {isLatePayment
+              ? isMock
+                ? 'Mock mode — late fee finalized without Stripe. Reputation updated. SMS sent if notification-service is running.'
+                : 'Your late fee has been paid. Rental is now completed. Confirmation SMS will be sent shortly.'
               : isMock
                 ? 'Mock mode — Stripe not configured.'
                 : 'Confirmation SMS will be sent shortly.'}
@@ -823,6 +850,115 @@ const PostPaymentView: React.FC<{
         <div className="flex gap-4 mt-6 justify-center">
           <Button variant="outline" onClick={() => navigate('/my-rentals')}>View My Rentals</Button>
           <Button onClick={() => navigate('/marketplace')}>Browse More</Button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ─── Return Flow Dialog ───────────────────────────────────────────────────────
+interface ReturnFlowDialogProps {
+  rentalId: number;
+  userId: number;
+  simulateLate: boolean;
+  onToggleSimulateLate: () => void;
+  onClose: () => void;
+  onConfirmed: (rentalId: number, endTime: string) => void;
+}
+
+const ReturnFlowDialog: React.FC<ReturnFlowDialogProps> = ({
+  rentalId, userId, simulateLate, onToggleSimulateLate, onClose, onConfirmed,
+}) => {
+  const [rental, setRental] = useState<ApiRental | null>(null);
+  const [equipmentName, setEquipmentName] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await getRental(rentalId);
+        setRental(r);
+        try {
+          const eq = await getEquipmentById(r.equipment_id);
+          setEquipmentName(eq.name);
+        } catch { /* non-fatal */ }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to load rental');
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [rentalId]);
+
+  // Parse end_time as UTC (API returns naive datetime without "Z")
+  const dueDate = rental
+    ? new Date(rental.end_time.endsWith('Z') || rental.end_time.includes('+') ? rental.end_time : rental.end_time + 'Z')
+    : null;
+  const simulatedReturnTime = dueDate ? new Date(dueDate.getTime() + 2 * 60 * 60 * 1000) : null;
+  const isLateSimulated = simulateLate && !!simulatedReturnTime;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-md">
+        <div className="flex items-center justify-between p-5 border-b">
+          <h2 className="font-semibold text-gray-900 flex items-center gap-2">
+            <RotateCcw className="w-4 h-4 text-amber-600" />
+            Confirm Return — Rental #{rentalId}
+          </h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
+        </div>
+        <div className="p-5 space-y-4">
+          {loading && (
+            <div className="flex items-center gap-2 text-gray-500 py-4 justify-center">
+              <Loader2 className="w-5 h-5 animate-spin" />
+              <span className="text-sm">Fetching your rental record…</span>
+            </div>
+          )}
+          {error && (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">{error}</div>
+          )}
+          {rental && !loading && (
+            <>
+              <div className="bg-gray-50 rounded-lg p-4 space-y-2 text-sm">
+                <p className="font-medium text-gray-800">{equipmentName || `Equipment #${rental.equipment_id}`}</p>
+                <div className="flex justify-between text-gray-600">
+                  <span>Rental period</span>
+                  <span className="font-mono text-xs">{new Date(rental.start_time).toLocaleString()} → {new Date(rental.end_time).toLocaleString()}</span>
+                </div>
+                <div className="flex justify-between text-gray-600">
+                  <span>Due date / time</span>
+                  <span className="font-mono text-xs text-amber-700 font-semibold">{dueDate?.toLocaleString()}</span>
+                </div>
+                <div className="flex justify-between text-gray-600">
+                  <span>Your return time</span>
+                  <span className={`font-mono text-xs font-semibold ${isLateSimulated ? 'text-red-600' : 'text-emerald-600'}`}>
+                    {isLateSimulated ? `${simulatedReturnTime?.toLocaleString()} (simulated)` : new Date().toLocaleString()}
+                  </span>
+                </div>
+                {isLateSimulated && (
+                  <div className="flex items-center gap-1.5 text-red-700 bg-red-50 rounded px-2 py-1 text-xs mt-1">
+                    <Clock className="w-3 h-3" /> Return is 2 hours past due — late fee will apply
+                  </div>
+                )}
+              </div>
+              <label className="flex items-center gap-2 cursor-pointer select-none text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                <input type="checkbox" checked={simulateLate} onChange={onToggleSimulateLate} className="rounded border-amber-400 accent-amber-600" />
+                <span>Simulate late return <span className="text-amber-600 text-xs">(demo: sets return time +2 hrs past due)</span></span>
+              </label>
+              <p className="text-xs text-gray-400">Confirming will POST to Camunda via Kong to initiate the return workflow.</p>
+            </>
+          )}
+        </div>
+        <div className="flex gap-3 p-5 border-t">
+          <button onClick={onClose} className="flex-1 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors">Cancel</button>
+          <button
+            disabled={loading || !!error || !rental}
+            onClick={() => rental && onConfirmed(rentalId, rental.end_time)}
+            className="flex-1 px-4 py-2 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center justify-center gap-2"
+          >
+            <RotateCcw className="w-4 h-4" /> Confirm Return
+          </button>
         </div>
       </div>
     </div>

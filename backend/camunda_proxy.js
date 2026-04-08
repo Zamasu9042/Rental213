@@ -32,6 +32,8 @@ const AMQP_EXCHANGE = process.env.AMQP_EXCHANGE || "rental_topic";
 
 const OUTSYSTEMS_BASE = "https://personal-3jztr7cq.outsystemscloud.com/Account/rest/account";
 const DEMO_LOGIN_PASSWORD = process.env.DEMO_LOGIN_PASSWORD || "password123";
+// Phone number used for demo accounts (set in .env as DEMO_PHONE_NUMBER=+6512345678)
+const DEMO_PHONE_NUMBER = process.env.DEMO_PHONE_NUMBER || "";
 const DEMO_BY_EMAIL = {
   "renter@test.com": { id: "1001", name: "Demo Renter", role: "renter" },
   "owner@test.com": { id: "1002", name: "Demo Owner", role: "owner" },
@@ -519,11 +521,41 @@ app.get("/api/account/:accountId", async (req, res) => {
         id: String(paramId),
         accountID: paramId,
         accountName: demo.accountName,
-        phoneNo: "",
+        phoneNo: DEMO_PHONE_NUMBER,
         email: demo.email,
       });
     }
     return res.status(404).json({ error: "Account not found" });
+  }
+});
+
+// ═══ Debug / Demo helpers ════════════════════════════════════════════════════
+
+/**
+ * POST /api/debug/seed-late-return
+ * Creates a COLLECTED rental with a past due date for Scenario 2 demo.
+ * Body: { renter_id, equipment_id? }
+ * Proxies to rental-service POST /rental/demo/seed-collected
+ */
+app.post("/api/debug/seed-late-return", express.json(), async (req, res) => {
+  const { renter_id, equipment_id = 1 } = req.body;
+  if (!renter_id) {
+    return res.status(400).json({ error: "renter_id required" });
+  }
+  try {
+    const data = await apiFetchJson(
+      `${RENTAL_SERVICE_URL}/rental/demo/seed-collected?renter_id=${renter_id}&equipment_id=${equipment_id}`,
+      { method: "POST" },
+    );
+    return res.status(201).json({
+      rental_id: data.id,
+      renter_id: data.renter_id,
+      end_time: data.end_time,
+      status: data.status,
+    });
+  } catch (err) {
+    console.error(`[debug] seed-late-return: ${err.message}`);
+    return res.status(502).json({ error: err.message });
   }
 });
 

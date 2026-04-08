@@ -281,6 +281,21 @@ def create_rental(payload: RentalCreate, db: Session = Depends(get_db)):
             detail=f"You have an outstanding {blocking_rental.status.lower()} payment (rental #{blocking_rental.id}). Please resolve it before renting again.",
         )
 
+    # Auto-cancel any stale PENDING rental from the same renter for the same equipment
+    # (e.g. a previous checkout that was abandoned before payment completed)
+    stale = (
+        db.query(Rental)
+        .filter(Rental.renter_id == payload.renter_id)
+        .filter(Rental.equipment_id == payload.equipment_id)
+        .filter(Rental.status == STATUS_PENDING)
+        .all()
+    )
+    for s in stale:
+        s.status = "CANCELLED"
+        print(f"[create_rental] auto-cancelled stale PENDING rental #{s.id} for renter={payload.renter_id}", flush=True)
+    if stale:
+        db.commit()
+
     if _overlapping_booking_exists(
         db, payload.equipment_id, payload.start_time, payload.end_time
     ):

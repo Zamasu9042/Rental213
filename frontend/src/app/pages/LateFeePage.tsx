@@ -27,7 +27,9 @@ import {
   getLateFeePayment,
   recordOutstandingLateFee,
   checkoutOutstandingLateFee,
+  getRental,
   ApiPayment,
+  ApiRental,
 } from '../../lib/api';
 
 type PageState = 'loading' | 'ready' | 'paying' | 'already-paid' | 'error';
@@ -37,6 +39,13 @@ interface NavState {
   lateFee?: number;
 }
 
+function hoursOverdue(rental: ApiRental): number {
+  if (!rental.return_timestamp) return 0;
+  const ret = new Date(rental.return_timestamp).getTime();
+  const due = new Date(rental.end_time).getTime();
+  return ret > due ? Math.max(1, Math.ceil((ret - due) / (1000 * 3600))) : 0;
+}
+
 export const LateFeePage: React.FC = () => {
   const { rentalId } = useParams<{ rentalId: string }>();
   const navigate = useNavigate();
@@ -44,6 +53,7 @@ export const LateFeePage: React.FC = () => {
 
   const [pageState, setPageState] = useState<PageState>('loading');
   const [payment, setPayment] = useState<ApiPayment | null>(null);
+  const [rental, setRental] = useState<ApiRental | null>(null);
   const [errorMessage, setErrorMessage] = useState('');
 
   useEffect(() => {
@@ -76,6 +86,11 @@ export const LateFeePage: React.FC = () => {
         }
 
         setPayment(resolved);
+        // Fetch rental to get hourly_rate + return_timestamp for breakdown display
+        try {
+          const r = await getRental(Number(rentalId));
+          setRental(r);
+        } catch { /* non-fatal */ }
         setPageState('ready');
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Failed to load late fee details.';
@@ -115,9 +130,9 @@ export const LateFeePage: React.FC = () => {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Clock className="w-5 h-5 text-red-500" />
-              Late Return Fee
+              Late Payment
             </CardTitle>
-            <p className="text-sm text-gray-500 mt-1">Rental #{rentalId}</p>
+            <p className="text-sm text-gray-500 mt-1">Outstanding late fee — Rental #{rentalId}</p>
           </CardHeader>
           <CardContent className="space-y-6">
 
@@ -135,10 +150,28 @@ export const LateFeePage: React.FC = () => {
                     <span className="text-gray-600">Rental ID</span>
                     <span className="font-mono">#{payment.rentalID}</span>
                   </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-gray-600">Fee type</span>
-                    <span className="capitalize">{payment.type} fee</span>
-                  </div>
+                  {rental && (
+                    <>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-gray-600">Due by</span>
+                        <span className="font-mono text-xs">{new Date(rental.end_time).toLocaleString()}</span>
+                      </div>
+                      {rental.return_timestamp && (
+                        <div className="flex justify-between text-sm">
+                          <span className="text-gray-600">Returned at</span>
+                          <span className="font-mono text-xs text-red-700">{new Date(rental.return_timestamp).toLocaleString()}</span>
+                        </div>
+                      )}
+                      {hoursOverdue(rental) > 0 && (
+                        <div className="flex justify-between text-sm">
+                          <span className="text-gray-600">Calculation</span>
+                          <span className="text-xs font-mono">
+                            {hoursOverdue(rental)} hr × ${Number(rental.hourly_rate).toFixed(2)}/hr
+                          </span>
+                        </div>
+                      )}
+                    </>
+                  )}
                   <div className="flex justify-between text-lg font-semibold border-t border-red-200 pt-3">
                     <span>Amount Due</span>
                     <span className="text-red-600">${Number(payment.amount).toFixed(2)}</span>
@@ -148,18 +181,18 @@ export const LateFeePage: React.FC = () => {
                 <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800">
                   <p className="font-semibold mb-1">Why am I being charged?</p>
                   <p>
-                    The equipment was returned after the agreed end date. Late fees are
+                    The equipment was returned after the agreed end time. The late payment is
                     calculated based on the hourly rate for each hour overdue (minimum 1 hour).
                   </p>
                 </div>
 
                 <Button
-                  className="w-full gap-2"
+                  className="w-full gap-2 bg-amber-600 hover:bg-amber-700"
                   size="lg"
                   onClick={handlePay}
                 >
                   <CreditCard className="w-4 h-4" />
-                  Pay ${Number(payment.amount).toFixed(2)} Now
+                  Pay Late Fee — ${Number(payment.amount).toFixed(2)}
                 </Button>
               </>
             )}
@@ -177,7 +210,7 @@ export const LateFeePage: React.FC = () => {
                 <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4 flex gap-3">
                   <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
                   <div>
-                    <p className="font-semibold text-emerald-800">Late fee already paid</p>
+                    <p className="font-semibold text-emerald-800">Late payment already completed</p>
                     <p className="text-sm text-emerald-700 mt-1">
                       Your payment has been received. Your rental is being marked as completed —
                       you'll receive a confirmation SMS shortly.

@@ -105,9 +105,9 @@ export const PaymentPage: React.FC = () => {
               <div className="border-t pt-4 space-y-2">
                 <div className="flex justify-between text-sm">
                   <span className="text-gray-600">Rental Period</span>
-                  <span>
-                    {new Date(startDate).toLocaleDateString()} –{' '}
-                    {new Date(endDate).toLocaleDateString()}
+                  <span className="text-right text-xs font-mono">
+                    {new Date(startDate).toLocaleString()} –{' '}
+                    {new Date(endDate).toLocaleString()}
                   </span>
                 </div>
                 <div className="flex justify-between text-sm">
