@@ -11,7 +11,6 @@
  *   POST /api/rentals            → camunda-proxy (starts workflow)
  *   GET  /api/rentals/:key/stripe-url → camunda-proxy (polls for Stripe URL)
  *   POST /api/payment/payrental, /api/payment/outstanding → payment-service
- *   POST /api/damage/*           → damage-claim-service
  *
  * Base URL: set VITE_API_BASE_URL for a full origin (e.g. deployed Kong). In dev, leave it
  * unset so requests are same-origin and vite.config.ts proxies /api → Kong (avoids CORS).
@@ -33,7 +32,8 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
       ...options,
     });
   } catch (e) {
-    const msg = e instanceof Error ? e.message : "Network error";
+    const msg =
+      e instanceof Error ? e.message : "Network error";
     throw new Error(
       `${msg}. Is Docker Compose up with Kong on :8000? (Try: empty VITE_API_BASE_URL in dev + restart Vite.)`
     );
@@ -76,7 +76,10 @@ export interface ApiEquipment {
   image_url?: string | null;
 }
 
+/** Map equipment-service schema → frontend Equipment shape */
 export function mapEquipment(item: ApiEquipment) {
+  // Build full image URL — absolute URLs (public/seeded) used as-is;
+  // relative /images/... paths are served via Kong's equipment-images route
   const imageUrl = item.image_url
     ? item.image_url.startsWith("http")
       ? item.image_url
@@ -98,16 +101,19 @@ export function mapEquipment(item: ApiEquipment) {
   };
 }
 
+/** Fetch all available equipment from equipment-service via Kong */
 export async function getEquipment() {
   const items = await request<ApiEquipment[]>("/api/equipment");
   return items.map(mapEquipment);
 }
 
+/** Fetch ALL equipment regardless of status (for owner views — includes rented/under_repair) */
 export async function getAllEquipment() {
   const items = await request<ApiEquipment[]>("/api/equipment?include_all=true");
   return items.map(mapEquipment);
 }
 
+/** Fetch a single piece of equipment by ID */
 export async function getEquipmentById(id: string | number) {
   const item = await request<ApiEquipment>(`/api/equipment/${id}`);
   return mapEquipment(item);
@@ -121,10 +127,11 @@ export interface ApiRental {
   equipment_id: number;
   start_time: string;
   end_time: string;
-  status: string;
+  status: string;  // PENDING | ACTIVE | COLLECTED | RETURNED | COMPLETED | LATE
   return_timestamp: string | null;
   hourly_rate: number;
   pickup_location: string;
+  // Dual-confirm flags
   renter_collected: boolean;
   owner_collected: boolean;
   renter_returned: boolean;
@@ -139,14 +146,17 @@ export interface RenterDashboard {
   should_show_equipment_browse: boolean;
 }
 
+/** Fetch the renter dashboard (active rentals + browse flag) from rental-service via Kong */
 export async function getRenterDashboard(renterId: number): Promise<RenterDashboard> {
   return request<RenterDashboard>(`/api/rental/renter/${renterId}/dashboard`);
 }
 
+/** Fetch a single rental by ID */
 export async function getRental(rentalId: number): Promise<ApiRental> {
   return request<ApiRental>(`/api/rental/${rentalId}`);
 }
 
+/** Renter marks equipment as collected (ACTIVE → COLLECTED) */
 export async function markCollected(rentalId: number, accountId: number): Promise<ApiRental> {
   return request<ApiRental>(`/api/rental/${rentalId}/collect`, {
     method: "PUT",
@@ -154,6 +164,7 @@ export async function markCollected(rentalId: number, accountId: number): Promis
   });
 }
 
+/** Renter or Owner confirms the return (COLLECTED → RETURNED when both done) */
 export async function confirmReturn(rentalId: number, accountId: number): Promise<ApiRental> {
   return request<ApiRental>(`/api/rental/${rentalId}/confirm-return`, {
     method: "PUT",
@@ -161,6 +172,7 @@ export async function confirmReturn(rentalId: number, accountId: number): Promis
   });
 }
 
+/** Renter or Owner confirms their review (RETURNED → COMPLETED when both done) */
 export async function confirmReview(rentalId: number, accountId: number): Promise<ApiRental> {
   return request<ApiRental>(`/api/rental/${rentalId}/confirm-review`, {
     method: "PUT",
@@ -168,7 +180,7 @@ export async function confirmReview(rentalId: number, accountId: number): Promis
   });
 }
 
-// ─── Payment ──────────────────────────────────────────────────────────────────
+// ─── Payment (payment-service via Kong — report / technical diagram) ─────────
 
 export interface ApiPayment {
   paymentID: number;
@@ -183,6 +195,7 @@ export interface ApiPayment {
   message?: string;
 }
 
+/** Scenario 2: late check + unpaid late-fee row (logic in payment-service). */
 export async function recordOutstandingLateFee(rentalId: number): Promise<ApiPayment> {
   return request<ApiPayment>("/api/payment/outstanding", {
     method: "POST",
@@ -220,6 +233,7 @@ export async function loginUser(email: string, password: string): Promise<LoginR
   });
 }
 
+/** Public account fields (no password) — for displaying owner/renter contact on rentals */
 export interface ApiAccountPublic {
   id: string;
   accountID: number;
@@ -232,7 +246,7 @@ export async function getAccount(accountId: number): Promise<ApiAccountPublic> {
   return request<ApiAccountPublic>(`/api/account/${accountId}`);
 }
 
-// ─── Reputation ───────────────────────────────────────────────────────────────
+// ─── Reputation (reputation-microservice via Kong) ──────────────────────────
 
 export interface ReputationEntryResponse {
   id: number;
@@ -246,6 +260,7 @@ export interface ReputationEntryResponse {
   timestamp: string | null;
 }
 
+/** Rate equipment (rater ≠ owner). Score 0–5. */
 export async function submitItemRating(body: {
   rater_id: number;
   equipment_id: number;
@@ -260,6 +275,7 @@ export async function submitItemRating(body: {
   });
 }
 
+/** Rate the other party (RENTER or OWNER). `ratedUserId` is the account being rated. */
 export async function submitUserRating(
   ratedUserId: number,
   body: {
@@ -276,6 +292,7 @@ export async function submitUserRating(
   });
 }
 
+/** ITEM ratings for an equipment listing (browse / detail page) via Kong → reputation-service */
 export interface ItemReputationSummary {
   equipment_id: number;
   average_score: number | null;
@@ -294,7 +311,7 @@ export async function getEquipmentItemReputation(equipmentId: number): Promise<I
   return request<ItemReputationSummary>(`/api/reputation/item/${equipmentId}`);
 }
 
-// ─── Rental workflow (camunda-proxy) ─────────────────────────────────────────
+// ─── Start rental workflow (through camunda-proxy) ───────────────────────────
 
 export interface StartRentalPayload {
   renterId: string;
@@ -314,6 +331,7 @@ export interface StripeUrlResponse {
   stripeRedirectUrl: string | null;
 }
 
+/** Starts the Camunda rental-workflow process (creates rental + Stripe session). */
 export async function startRentalProcess(payload: StartRentalPayload): Promise<StartRentalResponse> {
   return request<StartRentalResponse>("/api/rentals", {
     method: "POST",
@@ -321,6 +339,10 @@ export async function startRentalProcess(payload: StartRentalPayload): Promise<S
   });
 }
 
+/**
+ * Polls every 2 s until the Stripe redirect URL is ready.
+ * Throws if it times out after maxAttempts × 2 s.
+ */
 export async function pollStripeUrl(processInstanceKey: string, maxAttempts = 15): Promise<string> {
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise(r => setTimeout(r, 2000));
@@ -332,6 +354,7 @@ export async function pollStripeUrl(processInstanceKey: string, maxAttempts = 15
 
 // ─── Equipment Rentals (owner view) ──────────────────────────────────────────
 
+/** Fetch all rentals for a given equipment (owner can see who rented and file damage claims). */
 export async function getRentalsForEquipment(equipmentId: string | number): Promise<ApiRental[]> {
   return request<ApiRental[]>(`/api/rental/equipment/${equipmentId}/rentals`);
 }
@@ -341,29 +364,17 @@ export async function getRentalsForEquipment(equipmentId: string | number): Prom
 export interface ApiDamageClaim {
   claimID: string;
   rentalID: number;
-  equipmentID: number | null;
-  renterID: number | null;
-  photoURL: string | null;
+  photoURL: string | null;   // relative path e.g. /damage/files/filename.jpg
   damageType: string | null;
   confidence: number | null;
   severity: string | null;
-  /**
-   * DRAFT
-   * PENDING_STAFF_REVIEW     — staff reviews AI result
-   * PENDING_OWNER_AMOUNT     — staff approved AI, owner must enter amount
-   * PENDING_STAFF_APPROVAL   — owner submitted amount, staff reviews it
-   * AMOUNT_REJECTED          — staff rejected amount, owner re-enters
-   * APPROVED                 — fully approved, Camunda started
-   * REJECTED                 — claim rejected by staff
-   */
-  status: string;
-  damageAmount: number | null;
+  status: string;            // DRAFT | PENDING_STAFF_REVIEW | APPROVED | REJECTED
   created_at: string | null;
   analyzed_at: string | null;
   analysis: Record<string, unknown> | null;
 }
 
-/** Create a new claim in DRAFT status. */
+/** Create a new damage claim record for a rental. Returns claim in DRAFT status. */
 export async function createDamageClaim(rentalId: number): Promise<ApiDamageClaim> {
   return request<ApiDamageClaim>("/api/damage/claim", {
     method: "POST",
@@ -371,11 +382,8 @@ export async function createDamageClaim(rentalId: number): Promise<ApiDamageClai
   });
 }
 
-/** Upload a damage photo. Uses multipart/form-data. */
-export async function uploadDamagePhoto(
-  claimId: string,
-  file: File
-): Promise<{ claimID: string; photoURL: string }> {
+/** Upload a damage photo for an existing claim. Uses multipart/form-data. */
+export async function uploadDamagePhoto(claimId: string, file: File): Promise<{ claimID: string; photoURL: string }> {
   const form = new FormData();
   form.append("claim_id", claimId);
   form.append("file", file);
@@ -392,7 +400,7 @@ export async function uploadDamagePhoto(
   return resp.json();
 }
 
-/** Trigger Google Vision AI analysis. Moves claim to PENDING_STAFF_REVIEW. */
+/** Trigger AI analysis on the uploaded photo. Returns updated claim with Vision results. */
 export async function analyzeDamageClaim(claimId: string): Promise<ApiDamageClaim> {
   return request<ApiDamageClaim>("/api/damage/analyze", {
     method: "POST",
@@ -400,30 +408,23 @@ export async function analyzeDamageClaim(claimId: string): Promise<ApiDamageClai
   });
 }
 
-/** Get a single claim by ID. */
+/** Fetch a single damage claim by ID. */
 export async function getDamageClaim(claimId: string): Promise<ApiDamageClaim> {
   return request<ApiDamageClaim>(`/api/damage/${claimId}`);
 }
 
-/** Get all claims requiring staff attention. */
+/** Get all claims pending staff review. */
 export async function getPendingDamageClaims(): Promise<ApiDamageClaim[]> {
   return request<ApiDamageClaim[]>("/api/damage/pending");
 }
 
-/** Get the most recent damage claim for a rental. Throws 404 if none. */
+/** Get the most recent damage claim for a rental (owner view). Throws 404 if none. */
 export async function getDamageClaimByRental(rentalId: number): Promise<ApiDamageClaim> {
   return request<ApiDamageClaim>(`/api/damage/rental/${rentalId}`);
 }
 
-/**
- * Staff Step 1 — review AI result.
- * action=approve → PENDING_OWNER_AMOUNT
- * action=reject  → REJECTED
- */
-export async function resolveDamageClaim(
-  claimId: string,
-  action: "approve" | "reject"
-): Promise<ApiDamageClaim> {
+/** Resolve a claim — action: 'approve' | 'reject' */
+export async function resolveDamageClaim(claimId: string, action: "approve" | "reject"): Promise<ApiDamageClaim> {
   return request<ApiDamageClaim>(`/api/damage/${claimId}/resolve`, {
     method: "POST",
     body: JSON.stringify({ action }),
@@ -431,41 +432,12 @@ export async function resolveDamageClaim(
 }
 
 /**
- * Owner step — submit damage amount.
- * Moves claim from PENDING_OWNER_AMOUNT (or AMOUNT_REJECTED) → PENDING_STAFF_APPROVAL.
- */
-export async function submitDamageAmount(
-  claimId: string,
-  damageAmount: number
-): Promise<ApiDamageClaim> {
-  return request<ApiDamageClaim>(`/api/damage/${claimId}/submit-amount`, {
-    method: "POST",
-    body: JSON.stringify({ damage_amount: damageAmount }),
-  });
-}
-
-/**
- * Staff Step 2 — review owner's submitted amount.
- * action=approve → APPROVED + starts Camunda damage-claim-workflow
- * action=reject  → AMOUNT_REJECTED (owner can re-submit)
- */
-export async function reviewDamageAmount(
-  claimId: string,
-  action: "approve" | "reject"
-): Promise<ApiDamageClaim> {
-  return request<ApiDamageClaim>(`/api/damage/${claimId}/review-amount`, {
-    method: "POST",
-    body: JSON.stringify({ action }),
-  });
-}
-
-/**
  * Build the full URL for a damage photo.
- * Stored: /damage/files/filename.jpg
- * Kong strips /damage prefix → service gets /files/filename.jpg
- * Frontend must use /api/damage/files/filename.jpg
+ * Stored path: /damage/files/filename.jpg
+ * Kong route: /api/damage (strip_path:true) → service gets /damage/files/filename.jpg
+ * So frontend URL must be /api/damage/files/filename.jpg (strip leading /damage from stored path).
  */
 export function damagePhotoUrl(relPath: string): string {
-  const withoutDamagePrefix = relPath.replace(/^\/damage/, "");
+  const withoutDamagePrefix = relPath.replace(/^\/damage/, '');
   return `${API_BASE}/api/damage${withoutDamagePrefix}`;
 }
