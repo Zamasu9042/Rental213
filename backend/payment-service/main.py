@@ -47,7 +47,8 @@ if STRIPE_SECRET_KEY:
     stripe.api_key = STRIPE_SECRET_KEY
 
 TYPE_RENTAL = "rental"
-TYPE_LATE = "late"
+TYPE_LATE   = "late"
+TYPE_DAMAGE = "damage"
 STATUS_PAYING = "paying"
 STATUS_UNPAID = "unpaid"
 STATUS_PAID = "paid"
@@ -514,6 +515,110 @@ def outstanding_checkout(payment_id: int, db: Session = Depends(get_db)):
     return {**payment_to_dict(row), "checkout_url": checkout_url}
 
 
+class DamagePaymentBody(BaseModel):
+    rental_id: int     = Field(..., ge=1)
+    renter_id: int     = Field(..., ge=1)
+    claim_id:  int     = Field(..., ge=1)
+    amount:    Decimal = Field(..., gt=0)
+    item_name: Optional[str] = None
+
+
+@app.post("/payment/damage", status_code=201)
+def pay_damage(body: DamagePaymentBody, db: Session = Depends(get_db)):
+    """
+    Scenario 3 — called by camunda-proxy after damage claim is APPROVED.
+    Creates a Stripe Checkout session for the renter to pay the damage fee.
+    Idempotent — returns existing checkout URL if already created.
+    """
+    existing = (
+        db.query(Payment)
+        .filter(Payment.rental_id == body.rental_id)
+        .filter(Payment.type == TYPE_DAMAGE)
+        .filter(Payment.status.in_((STATUS_PAYING, STATUS_PAID)))
+        .first()
+    )
+    if existing and existing.status == STATUS_PAID:
+        raise HTTPException(status_code=409, detail="Damage payment already completed")
+    if existing and existing.status == STATUS_PAYING:
+        # Return existing checkout URL
+        checkout_url = f"{FRONTEND_URL}/my-rentals"
+        with httpx.Client(base_url=PAYMENT_WRAPPER_URL, timeout=30.0) as c:
+            try:
+                resp = c.post("/payment/create-checkout-session", json={
+                    "amount":      float(existing.amount),
+                    "currency":    "sgd",
+                    "item_name":   existing.item_name or f"Damage fee #{existing.id}",
+                    "payment_id":  existing.id,
+                    "rental_id":   existing.rental_id,
+                    "kind":        TYPE_DAMAGE,
+                    "success_url": f"{FRONTEND_URL}/my-rentals?damage_paid=1",
+                    "cancel_url":  f"{FRONTEND_URL}/my-rentals",
+                })
+                if resp.is_success:
+                    checkout_url = resp.json().get("checkout_url", checkout_url)
+            except Exception:
+                pass
+        return {**payment_to_dict(existing), "checkout_url": checkout_url}
+
+    now       = _now()
+    item_name = body.item_name or f"Damage fee — claim #{body.claim_id}"
+    row = Payment(
+        rental_id=body.rental_id,
+        renter_id=body.renter_id,
+        amount=body.amount,
+        type=TYPE_DAMAGE,
+        status=STATUS_PAYING,
+        item_name=item_name,
+        stripe_session_id=None,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+
+    with httpx.Client(base_url=PAYMENT_WRAPPER_URL, timeout=30.0) as c:
+        resp = c.post("/payment/create-checkout-session", json={
+            "amount":      float(body.amount),
+            "currency":    "sgd",
+            "item_name":   item_name,
+            "payment_id":  row.id,
+            "rental_id":   body.rental_id,
+            "kind":        TYPE_DAMAGE,
+            "success_url": f"{FRONTEND_URL}/my-rentals?damage_paid=1",
+            "cancel_url":  f"{FRONTEND_URL}/my-rentals",
+        })
+    if resp.is_success:
+        data = resp.json()
+        row.stripe_session_id = data["session_id"]
+        db.commit()
+        checkout_url = data["checkout_url"]
+    else:
+        # Mock path — no Stripe configured; mark paid immediately
+        print(f"[pay_damage] mock: payment-wrapper unavailable, marking PAID immediately", flush=True)
+        row.status = STATUS_PAID
+        row.updated_at = _now()
+        db.commit()
+        db.refresh(row)
+        try:
+            httpx.post(
+                f"{ORCHESTRATOR_URL}/internal/damage-payment-confirmed",
+                json={
+                    "rental_id":  body.rental_id,
+                    "renter_id":  body.renter_id,
+                    "payment_id": row.id,
+                    "amount":     float(body.amount),
+                    "claim_id":   str(body.claim_id),
+                },
+                timeout=10.0,
+            )
+        except Exception as e:
+            print(f"[pay_damage] mock: proxy notify failed: {e}", flush=True)
+        checkout_url = f"{FRONTEND_URL}/my-rentals?damage_paid=1"
+
+    return {**payment_to_dict(row), "checkout_url": checkout_url}
+
+
 @app.get("/payment/{payment_id}")
 def get_payment(payment_id: int, db: Session = Depends(get_db)):
     row = db.query(Payment).filter(Payment.id == payment_id).first()
@@ -627,6 +732,21 @@ def sync_payment_from_stripe(payment_id: int, db: Session = Depends(get_db)):
     if row.type == TYPE_LATE:
         # Scenario 2: notify Camunda to verify (3 retries), deduct reputation, complete rental, SMS
         _notify_orchestrator_late_payment(row)
+    elif row.type == TYPE_DAMAGE:
+        # Scenario 3: notify proxy to publish final SMS
+        try:
+            httpx.post(
+                f"{ORCHESTRATOR_URL}/internal/damage-payment-confirmed",
+                json={
+                    "rental_id":  row.rental_id,
+                    "renter_id":  row.renter_id,
+                    "payment_id": row.id,
+                    "amount":     float(row.amount),
+                },
+                timeout=10.0,
+            )
+        except Exception as exc:
+            print(f"[sync-from-stripe] damage notify: {exc}", flush=True)
     else:
         with _rental_client() as c:
             if row.type == TYPE_RENTAL:
@@ -794,6 +914,23 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
     if row.type == TYPE_LATE:
         # Scenario 2: Camunda verifies (3 retries), deducts reputation, completes rental, publishes RabbitMQ
         _notify_orchestrator_late_payment(row)
+    elif row.type == TYPE_DAMAGE:
+        # Scenario 3: notify proxy to publish final SMS confirmation
+        try:
+            claim_id = meta.get("claim_id") if isinstance(meta, dict) else None
+            httpx.post(
+                f"{ORCHESTRATOR_URL}/internal/damage-payment-confirmed",
+                json={
+                    "rental_id":  row.rental_id,
+                    "renter_id":  row.renter_id,
+                    "payment_id": row.id,
+                    "amount":     float(row.amount),
+                    "claim_id":   claim_id,
+                },
+                timeout=10.0,
+            )
+        except Exception as orch_err:
+            print(f"[webhook] damage notify error: {orch_err}", flush=True)
     else:
         # Scenario 1: finalize booking, then Camunda updates equipment status + publishes RabbitMQ
         with _rental_client() as c:

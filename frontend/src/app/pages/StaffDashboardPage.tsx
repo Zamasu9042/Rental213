@@ -11,11 +11,13 @@ import {
   XCircle,
   Cpu,
   RefreshCw,
+  DollarSign,
 } from 'lucide-react';
 import {
   ApiDamageClaim,
   getPendingDamageClaims,
   resolveDamageClaim,
+  reviewDamageAmount,
   damagePhotoUrl,
 } from '../../lib/api';
 
@@ -41,10 +43,23 @@ export const StaffDashboardPage: React.FC = () => {
     setResolving(claimId);
     try {
       const updated = await resolveDamageClaim(claimId, action);
-      // Remove from pending list once resolved
+      // Remove from pending list (either rejected or moved to PENDING_OWNER_AMOUNT)
       setClaims(prev => prev.filter(c => c.claimID !== updated.claimID));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to resolve claim');
+    } finally {
+      setResolving(null);
+    }
+  };
+
+  const handleReviewAmount = async (claimId: string, action: 'approve' | 'reject') => {
+    setResolving(claimId);
+    try {
+      const updated = await reviewDamageAmount(claimId, action);
+      // Remove from pending list once approved/rejected
+      setClaims(prev => prev.filter(c => c.claimID !== updated.claimID));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to review amount');
     } finally {
       setResolving(null);
     }
@@ -100,9 +115,13 @@ export const StaffDashboardPage: React.FC = () => {
               const severityColor =
                 claim.severity === 'high' ? 'text-red-600' :
                 claim.severity === 'medium' ? 'text-amber-600' : 'text-green-600';
+              const isAmountReview = claim.status === 'PENDING_STAFF_APPROVAL';
 
               return (
-                <Card key={claim.claimID} className="border-l-4 border-l-blue-400">
+                <Card
+                  key={claim.claimID}
+                  className={`border-l-4 ${isAmountReview ? 'border-l-amber-400' : 'border-l-blue-400'}`}
+                >
                   <CardHeader className="pb-3">
                     <div className="flex items-center justify-between flex-wrap gap-2">
                       <CardTitle className="text-base">
@@ -111,7 +130,9 @@ export const StaffDashboardPage: React.FC = () => {
                           · Rental #{claim.rentalID}
                         </span>
                       </CardTitle>
-                      <Badge variant="default">Pending Review</Badge>
+                      <Badge variant={isAmountReview ? 'outline' : 'default'}>
+                        {isAmountReview ? 'Amount Review' : 'Pending AI Review'}
+                      </Badge>
                     </div>
                     <p className="text-xs text-gray-400">
                       Submitted: {claim.created_at ? new Date(claim.created_at).toLocaleString() : '—'}
@@ -135,7 +156,7 @@ export const StaffDashboardPage: React.FC = () => {
                       </div>
                     )}
 
-                    {/* AI Analysis */}
+                    {/* AI Analysis (always shown) */}
                     <div className="bg-blue-50 border border-blue-100 rounded-lg p-4">
                       <div className="flex items-center gap-2 mb-3">
                         <Cpu className="w-4 h-4 text-blue-600" />
@@ -175,34 +196,64 @@ export const StaffDashboardPage: React.FC = () => {
                       )}
                     </div>
 
-                    {/* Actions */}
-                    <div className="flex gap-3 pt-1">
-                      <Button
-                        className="flex-1 gap-2"
-                        onClick={() => handleResolve(claim.claimID, 'approve')}
-                        disabled={isResolving}
-                      >
-                        {isResolving ? (
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                        ) : (
-                          <CheckCircle className="w-4 h-4" />
-                        )}
-                        Approve Claim
-                      </Button>
-                      <Button
-                        variant="outline"
-                        className="flex-1 gap-2 text-gray-600"
-                        onClick={() => handleResolve(claim.claimID, 'reject')}
-                        disabled={isResolving}
-                      >
-                        {isResolving ? (
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                        ) : (
-                          <XCircle className="w-4 h-4" />
-                        )}
-                        Reject Claim
-                      </Button>
-                    </div>
+                    {/* ── Amount review panel (PENDING_STAFF_APPROVAL) ── */}
+                    {isAmountReview && (
+                      <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+                        <div className="flex items-center gap-2 mb-3">
+                          <DollarSign className="w-4 h-4 text-amber-600" />
+                          <span className="text-sm font-semibold text-amber-900">Owner's Claimed Amount</span>
+                        </div>
+                        <p className="text-3xl font-bold text-amber-700 mb-3">
+                          ${claim.damageAmount?.toFixed(2) ?? '—'}
+                        </p>
+                        <p className="text-xs text-gray-600 mb-4">
+                          Approving will charge the renter via Stripe and mark the equipment for repair.
+                          Rejecting asks the owner to revise the amount.
+                        </p>
+                        <div className="flex gap-3">
+                          <Button
+                            className="flex-1 gap-2"
+                            onClick={() => handleReviewAmount(claim.claimID, 'approve')}
+                            disabled={isResolving}
+                          >
+                            {isResolving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
+                            Approve & Charge Renter
+                          </Button>
+                          <Button
+                            variant="outline"
+                            className="flex-1 gap-2 text-gray-600"
+                            onClick={() => handleReviewAmount(claim.claimID, 'reject')}
+                            disabled={isResolving}
+                          >
+                            {isResolving ? <Loader2 className="w-4 h-4 animate-spin" /> : <XCircle className="w-4 h-4" />}
+                            Reject Amount
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* ── AI review actions (PENDING_STAFF_REVIEW) ── */}
+                    {!isAmountReview && (
+                      <div className="flex gap-3 pt-1">
+                        <Button
+                          className="flex-1 gap-2"
+                          onClick={() => handleResolve(claim.claimID, 'approve')}
+                          disabled={isResolving}
+                        >
+                          {isResolving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
+                          Approve AI Result
+                        </Button>
+                        <Button
+                          variant="outline"
+                          className="flex-1 gap-2 text-gray-600"
+                          onClick={() => handleResolve(claim.claimID, 'reject')}
+                          disabled={isResolving}
+                        >
+                          {isResolving ? <Loader2 className="w-4 h-4 animate-spin" /> : <XCircle className="w-4 h-4" />}
+                          Reject Claim
+                        </Button>
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
               );

@@ -443,11 +443,14 @@ export async function getRentalsForEquipment(equipmentId: string | number): Prom
 export interface ApiDamageClaim {
   claimID: string;
   rentalID: number;
+  equipmentID: number | null;
+  renterID: number | null;
   photoURL: string | null;   // relative path e.g. /damage/files/filename.jpg
   damageType: string | null;
   confidence: number | null;
   severity: string | null;
-  status: string;            // DRAFT | PENDING_STAFF_REVIEW | APPROVED | REJECTED
+  status: string;            // DRAFT | PENDING_STAFF_REVIEW | PENDING_OWNER_AMOUNT | PENDING_STAFF_APPROVAL | AMOUNT_REJECTED | APPROVED | REJECTED
+  damageAmount: number | null;
   created_at: string | null;
   analyzed_at: string | null;
   analysis: Record<string, unknown> | null;
@@ -502,9 +505,25 @@ export async function getDamageClaimByRental(rentalId: number): Promise<ApiDamag
   return request<ApiDamageClaim>(`/api/damage/rental/${rentalId}`);
 }
 
-/** Resolve a claim — action: 'approve' | 'reject' */
+/** Resolve a claim — action: 'approve' | 'reject' (staff Step 1: AI result review) */
 export async function resolveDamageClaim(claimId: string, action: "approve" | "reject"): Promise<ApiDamageClaim> {
   return request<ApiDamageClaim>(`/api/damage/${claimId}/resolve`, {
+    method: "POST",
+    body: JSON.stringify({ action }),
+  });
+}
+
+/** Owner submits the damage amount they are claiming (after staff approves AI result). */
+export async function submitDamageAmount(claimId: string, amount: number): Promise<ApiDamageClaim> {
+  return request<ApiDamageClaim>(`/api/damage/${claimId}/submit-amount`, {
+    method: "POST",
+    body: JSON.stringify({ damage_amount: amount }),
+  });
+}
+
+/** Staff reviews the damage amount — action: 'approve' | 'reject' (staff Step 2). */
+export async function reviewDamageAmount(claimId: string, action: "approve" | "reject"): Promise<ApiDamageClaim> {
+  return request<ApiDamageClaim>(`/api/damage/${claimId}/review-amount`, {
     method: "POST",
     body: JSON.stringify({ action }),
   });

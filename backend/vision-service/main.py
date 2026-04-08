@@ -33,13 +33,26 @@ def _assess_from_labels(labels: list[dict]) -> dict[str, Any]:
         (l.get("description") or "").lower() for l in labels[:15]
     )
     damage_kw = (
-        "scratch",
-        "dent",
         "crack",
         "break",
+        "broken",
         "damage",
+        "damaged",
+        "scratch",
+        "scratched",
+        "dent",
+        "dented",
         "tear",
+        "torn",
         "stain",
+        "fracture",
+        "shatter",
+        "bent",
+        "snap",
+        "propeller",   # drone-specific
+        "rotor",       # drone-specific
+        "debris",
+        "fragment",
     )
     hit = next((k for k in damage_kw if k in text), "general_wear")
     max_score = max((float(l.get("score") or 0) for l in labels), default=0.5)

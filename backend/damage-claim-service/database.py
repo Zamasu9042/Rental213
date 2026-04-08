@@ -22,6 +22,23 @@ Base = declarative_base()
 
 def create_tables():
     Base.metadata.create_all(bind=engine)
+    # Idempotent migrations — add new columns if the table already existed without them
+    _run_migrations()
+
+
+def _run_migrations():
+    from sqlalchemy import text
+    migrations = [
+        "ALTER TABLE damage_claims ADD COLUMN equipment_id INT NULL",
+        "ALTER TABLE damage_claims ADD COLUMN renter_id INT NULL",
+        "ALTER TABLE damage_claims ADD COLUMN damage_amount DECIMAL(10,2) NULL",
+    ]
+    with engine.begin() as conn:
+        for sql in migrations:
+            try:
+                conn.execute(text(sql))
+            except Exception:
+                pass  # column already exists — safe to ignore
 
 
 def get_db():

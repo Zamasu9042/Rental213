@@ -21,10 +21,11 @@ const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || "";
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || "";
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-04-10" }) : null;
 
-const RENTAL_SERVICE_URL = process.env.RENTAL_SERVICE_URL || "http://rental-service:8000";
-const PAYMENT_SERVICE_URL = process.env.PAYMENT_SERVICE_URL || "http://payment-service:8000";
+const RENTAL_SERVICE_URL     = process.env.RENTAL_SERVICE_URL     || "http://rental-service:8000";
+const PAYMENT_SERVICE_URL    = process.env.PAYMENT_SERVICE_URL    || "http://payment-service:8000";
+const EQUIPMENT_SERVICE_URL  = process.env.EQUIPMENT_SERVICE_URL  || "http://equipment-service:8000";
 const REPUTATION_SERVICE_URL = process.env.REPUTATION_SERVICE_URL || "http://reputation-service:8000";
-const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5173";
+const FRONTEND_URL           = process.env.FRONTEND_URL           || "http://localhost:5173";
 
 const AMQP_HOST = process.env.AMQP_HOST || "rabbitmq";
 const AMQP_PORT = process.env.AMQP_PORT || "5672";
@@ -559,11 +560,121 @@ app.post("/api/debug/seed-late-return", express.json(), async (req, res) => {
   }
 });
 
+// ═══ Scenario 3 — Damage Claim Workflow ════════════════════════════════════
+
+/**
+ * POST /api/damage-workflow
+ * Called by damage-claim-service after staff gives final approval on the damage amount.
+ * Body: { claimId, equipmentId, renterId, rentalId, damageAmount }
+ *
+ * Step 1: Mark equipment under_repair
+ * Step 2: Create Stripe Checkout for renter via payment-service
+ * Step 3: Publish SendDamageNotification → RabbitMQ → SMS to renter
+ */
+app.post("/api/damage-workflow", express.json(), async (req, res) => {
+  const { claimId, equipmentId, renterId, rentalId, damageAmount } = req.body;
+  const missing = ["claimId", "equipmentId", "renterId", "rentalId", "damageAmount"]
+    .filter(f => req.body[f] == null);
+  if (missing.length) {
+    return res.status(400).json({ error: `Missing fields: ${missing.join(", ")}` });
+  }
+
+  console.log(`[damage-workflow] claimId=${claimId} equipId=${equipmentId} renterId=${renterId} rental=${rentalId} amount=${damageAmount}`);
+  res.json({ ok: true }); // respond immediately so damage-claim-service doesn't block
+
+  (async () => {
+    try {
+      // Step 1: Mark equipment under_repair
+      try {
+        await apiFetchJson(`${EQUIPMENT_SERVICE_URL}/equipment/${equipmentId}`, {
+          method: "PUT",
+          body: JSON.stringify({ status: "under_repair" }),
+        });
+        console.log(`[damage-workflow] equipment ${equipmentId} → under_repair`);
+      } catch (err) {
+        console.error(`[damage-workflow] equipment update failed: ${err.message}`);
+      }
+
+      // Step 2: Create damage payment → Stripe Checkout for renter
+      let checkoutUrl = `${FRONTEND_URL}/my-rentals`;
+      try {
+        const pay = await apiFetchJson(`${PAYMENT_SERVICE_URL}/payment/damage`, {
+          method: "POST",
+          body: JSON.stringify({
+            rental_id:  Number(rentalId),
+            renter_id:  Number(renterId),
+            claim_id:   Number(claimId),
+            amount:     Number(damageAmount),
+            item_name:  `Damage fee — claim #${claimId}`,
+          }),
+        });
+        checkoutUrl = pay.checkout_url || checkoutUrl;
+        console.log(`[damage-workflow] payment created paymentId=${pay.paymentID} url=${checkoutUrl}`);
+      } catch (err) {
+        console.error(`[damage-workflow] payment creation failed: ${err.message}`);
+      }
+
+      // Step 3: Notify renter via RabbitMQ → SMS
+      await publishAmqp("SendDamageNotification", {
+        event:        "SendDamageNotification",
+        claim_id:     claimId,
+        rental_id:    rentalId,
+        renter_id:    renterId,
+        amount:       damageAmount,
+        checkout_url: checkoutUrl,
+      });
+      console.log(`[damage-workflow] Steps 1-3 complete — waiting for renter payment`);
+
+    } catch (err) {
+      console.error(`[damage-workflow] Unhandled error: ${err.message}`);
+    }
+  })();
+});
+
+/**
+ * POST /internal/damage-payment-confirmed
+ * Called by payment-service after Stripe webhook confirms damage fee payment.
+ * Publishes final SMS confirmation to renter.
+ */
+app.post("/internal/damage-payment-confirmed", express.json(), async (req, res) => {
+  const { rental_id, renter_id, payment_id, amount, claim_id } = req.body;
+  res.json({ ok: true });
+
+  console.log(`[damage-payment] Confirmed rentalId=${rental_id} claimId=${claim_id}`);
+
+  // Deduct reputation from the renter who caused the damage (same as Scenario 2 late return)
+  try {
+    const r = await fetch(`${REPUTATION_SERVICE_URL}/reputation/deduct`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: renter_id, points: 10 }),
+    });
+    if (r.ok) {
+      console.log(`[damage-payment] Reputation deducted for renter_id=${renter_id}`);
+    } else {
+      console.error(`[damage-payment] Reputation deduct failed: ${await r.text()}`);
+    }
+  } catch (err) {
+    console.error(`[damage-payment] Reputation deduct error: ${err.message}`);
+  }
+
+  await publishAmqp("SendPaymentConfirmation", {
+    event:     "SendPaymentConfirmation",
+    rental_id,
+    renter_id,
+    amount,
+    type:      "damage",
+    claim_id,
+  });
+
+  console.log(`[damage-workflow] Scenario 3 complete — claimId=${claim_id}`);
+});
+
 app.get("/health", (_req, res) =>
   res.json({
     status: "ok",
     service: "orchestrator-proxy",
-    mode: "scenario-1-and-2",
+    mode: "scenario-1-2-3",
     stripe: stripe ? "yes" : "no",
   }),
 );

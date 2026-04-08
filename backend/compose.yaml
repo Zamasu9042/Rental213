@@ -306,6 +306,8 @@ services:
     environment:
       DATABASE_URL: mysql+pymysql://damage:damage_pass@damage-db:3306/damage_claims_db
       VISION_SERVICE_URL: http://vision-service:8000
+      RENTAL_SERVICE_URL: http://rental-service:8000
+      PROXY_URL: http://camunda-proxy:3001
     volumes:
       - damage_photos:/data/photos
     ports:
@@ -443,6 +445,7 @@ services:
       PORT: "3001"
       RENTAL_SERVICE_URL: http://rental-service:8000
       PAYMENT_SERVICE_URL: http://payment-service:8000
+      EQUIPMENT_SERVICE_URL: http://equipment-service:8000
       REPUTATION_SERVICE_URL: http://reputation-service:8000
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
       AMQP_HOST: rabbitmq
